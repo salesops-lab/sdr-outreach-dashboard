@@ -1,0 +1,41 @@
+name: Sync HubSpot snapshot
+
+# On-demand refresh. Click "Run workflow" in the Actions tab.
+# (Add a `schedule: - cron: ...` block here later to auto-refresh.)
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write # allow committing the refreshed snapshot back
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run sync
+        env:
+          HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
+          # Optional: set this secret to also push to Vercel Blob (no redeploy).
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        run: npm run sync
+
+      - name: Commit refreshed snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- data/snapshot.json; then
+            git add data/snapshot.json
+            git commit -m "chore: refresh SDR outreach snapshot [skip ci]"
+            git push
+          else
+            echo "No snapshot changes."
+          fi
