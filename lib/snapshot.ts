@@ -9,15 +9,25 @@
 import { PERIOD_KEYS, PeriodKey, PeriodMetrics, Snapshot } from "./sync/types";
 import { REPS, REP_OWNER_IDS } from "../config/reps";
 
+function emptyReach() {
+  return { total: 0, call_only: 0, email_only: 0, both: 0, via_call: 0, via_email: 0 };
+}
+
 function emptyMetrics(): PeriodMetrics {
   return {
-    unique_contacts: 0,
-    unique_companies: 0,
-    companies_with_contact: 0,
-    avg_contacts_per_company: 0,
     calls: { total: 0, connected: 0, not_connected: 0, null_disposition: 0, connect_rate: 0, by_disposition: {} },
     emails: { sent: 0, bounced: 0, bounce_rate: 0 },
-    channel_mix: { call_only: 0, email_only: 0, both: 0 },
+    meetings_booked: 0,
+    contacts: emptyReach(),
+    companies: emptyReach(),
+    companies_with_contact: 0,
+    avg_contacts_per_company: 0,
+    multitouch_contacts: 0,
+    multitouch_accounts: 0,
+    coverage: { owned_total: 0, owned_tapped: 0, pct: 0, untapped_count: 0, untapped_sample: [] },
+    temp: { hot: 0, warm: 0, cold: 0 },
+    quality: { score: 0, grade: "—", sub: { conversations: 0, depth: 0, persistence: 0, channel: 0, deliverability: 0 } },
+    insights: [],
     unattributed_activities: 0,
   };
 }

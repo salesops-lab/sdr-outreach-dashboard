@@ -46,10 +46,29 @@ export const ALL_DISPOSITIONS: Record<string, string> = {
   ...NOT_CONNECTED_DISPOSITIONS,
 };
 
+/** Meeting Scheduled — the strongest positive outcome. */
+export const MEETING_SCHEDULED_GUID = "243ad062-d38f-40ea-86e2-10040d9ce4bd";
+
+/** High-intent outcomes that make an account "hot". */
+export const HIGH_INTENT_GUIDS = new Set<string>([
+  "243ad062-d38f-40ea-86e2-10040d9ce4bd", // C - Meeting Scheduled
+  "af20b15f-39a5-4a40-94e4-63cbe341cf1b", // C - Callback High Intent
+  "2aa923e7-3887-4e12-a944-cb7871fe09e3", // C - Meeting Rescheduled
+  "f4c8fab8-d5d3-4c90-aab8-4deb4b62cfca", // C - Meeting Reminder
+]);
+
 /** True if a human was reached (disposition is in the connected set). */
 export function isConnected(guid: string | null | undefined): boolean {
   if (!guid) return false;
   return guid in CONNECTED_DISPOSITIONS;
+}
+
+export function isHighIntent(guid: string | null | undefined): boolean {
+  return !!guid && HIGH_INTENT_GUIDS.has(guid);
+}
+
+export function isMeeting(guid: string | null | undefined): boolean {
+  return guid === MEETING_SCHEDULED_GUID;
 }
 
 /** Human label for a disposition GUID (or a readable "Unknown" fallback). */

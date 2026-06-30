@@ -132,6 +132,50 @@ function toMs(hsTimestamp: string | null): number {
   return new Date(hsTimestamp).getTime();
 }
 
+export interface OwnedCompany {
+  id: string;
+  name: string;
+}
+
+/**
+ * Pull each rep's owned company book (company owner = rep) — the coverage
+ * denominator. Searched per-owner so no single query approaches the 10k ceiling,
+ * and names come back in the search (no separate name lookup needed).
+ */
+export async function pullOwnedCompanies(): Promise<Record<string, OwnedCompany[]>> {
+  const out: Record<string, OwnedCompany[]> = {};
+  console.log("Pulling owned-company books (coverage denominator)…");
+
+  for (const ownerId of REP_OWNER_IDS) {
+    const companies: OwnedCompany[] = [];
+    let after: string | undefined;
+    do {
+      const body: Record<string, unknown> = {
+        filterGroups: [{ filters: [{ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }] }],
+        sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
+        properties: ["name"],
+        limit: 100,
+      };
+      if (after) body.after = after;
+      const res = await hubspotPost<SearchResponse>(`/crm/v3/objects/companies/search`, body);
+      for (const r of res.results) {
+        companies.push({ id: r.id, name: r.properties.name?.trim() || `Company ${r.id}` });
+      }
+      after = res.paging?.next?.after;
+      await delay(RATE_LIMIT_DELAY_MS);
+    } while (after);
+
+    out[ownerId] = companies;
+    if (companies.length >= CEILING_WARN) {
+      console.warn(`  ⚠️  owner ${ownerId} owns ${companies.length} companies — near the 10k Search ceiling.`);
+    }
+  }
+
+  const total = Object.values(out).reduce((a, c) => a + c.length, 0);
+  console.log(`  owned companies: ${total} across ${REP_OWNER_IDS.length} reps.`);
+  return out;
+}
+
 export interface PullCaps {
   calls: boolean;
   emails: boolean;

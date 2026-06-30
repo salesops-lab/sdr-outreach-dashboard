@@ -52,10 +52,51 @@ export interface EmailMetrics {
   bounce_rate: number;
 }
 
-export interface ChannelMix {
+/** Unique entities (contacts or companies) tapped, split by which activity reached them. */
+export interface ReachByChannel {
+  total: number; // distinct entities tapped
   call_only: number;
   email_only: number;
   both: number;
+  via_call: number; // call_only + both
+  via_email: number; // email_only + both
+}
+
+/** Coverage of the rep's owned book (company owner = rep). */
+export interface Coverage {
+  owned_total: number;
+  owned_tapped: number;
+  pct: number; // owned_tapped / owned_total
+  untapped_count: number;
+  untapped_sample: ContactRef[]; // capped; populated for coverage periods only
+}
+
+/** Tapped accounts classified by engagement temperature. */
+export interface AccountTemp {
+  hot: number; // meeting booked or high-intent
+  warm: number; // connected / multi-touched
+  cold: number; // touched but never connected
+}
+
+export interface QualitySub {
+  conversations: number; // 0-100 each
+  depth: number;
+  persistence: number;
+  channel: number;
+  deliverability: number;
+}
+
+export interface QualityScore {
+  score: number; // 0-100 weighted
+  grade: string; // A / B / C / D / F
+  sub: QualitySub;
+}
+
+export type InsightLevel = "good" | "warn" | "info";
+
+export interface Insight {
+  level: InsightLevel;
+  text: string;
 }
 
 export interface ContactRef {
@@ -63,12 +104,16 @@ export interface ContactRef {
   name: string;
 }
 
+export type Temperature = "hot" | "warm" | "cold";
+
 export interface CompanyBreakdownRow {
   id: string;
   name: string;
   contacts: number;
   calls: number;
   emails: number;
+  temp: Temperature;
+  owned: boolean; // is this company in the rep's owned book?
   contacts_list?: ContactRef[]; // who, with HubSpot record links (narrow periods)
 }
 
@@ -81,13 +126,25 @@ export interface DailyPoint {
 }
 
 export interface PeriodMetrics {
-  unique_contacts: number;
-  unique_companies: number;
-  companies_with_contact: number;
-  avg_contacts_per_company: number;
+  // Volume
   calls: CallMetrics;
   emails: EmailMetrics;
-  channel_mix: ChannelMix;
+  meetings_booked: number;
+  // Reach (unique, split by activity)
+  contacts: ReachByChannel;
+  companies: ReachByChannel;
+  companies_with_contact: number;
+  avg_contacts_per_company: number;
+  multitouch_contacts: number; // contacts touched 2+ times
+  multitouch_accounts: number; // companies touched 2+ times
+  // Coverage of owned book
+  coverage: Coverage;
+  // Account temperature (tapped accounts)
+  temp: AccountTemp;
+  // Quality
+  quality: QualityScore;
+  // Insights (rule-based callouts)
+  insights: Insight[];
   unattributed_activities: number;
   company_breakdown?: CompanyBreakdownRow[]; // narrow periods only
 }

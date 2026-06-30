@@ -15,7 +15,7 @@ config(); // also .env if present
 
 import { hubspotGet } from "../lib/hubspot/client";
 import { makeIstContext } from "../lib/sync/buckets";
-import { pullActivities } from "../lib/sync/pull";
+import { pullActivities, pullOwnedCompanies } from "../lib/sync/pull";
 import { resolveAssociations } from "../lib/sync/associate";
 import { aggregate } from "../lib/sync/aggregate";
 
@@ -89,7 +89,16 @@ async function main(): Promise<void> {
 
   const raw = await pullActivities(ctx.windowStartMs, ctx.nowMs, caps);
   const { activities, companyNames, contactNames } = await resolveAssociations(raw);
-  const snapshot = aggregate(activities, companyNames, contactNames, ctx, Date.now(), caps);
+
+  // Coverage denominator: each rep's owned company book.
+  let ownedCompanies: Awaited<ReturnType<typeof pullOwnedCompanies>> = {};
+  try {
+    ownedCompanies = await pullOwnedCompanies();
+  } catch (err) {
+    console.warn("Could not pull owned companies (coverage will be empty):", err instanceof Error ? err.message : err);
+  }
+
+  const snapshot = aggregate(activities, companyNames, contactNames, ownedCompanies, ctx, Date.now(), caps);
 
   const json = JSON.stringify(snapshot, null, 2);
   const outPath = path.join(process.cwd(), "data", "snapshot.json");
