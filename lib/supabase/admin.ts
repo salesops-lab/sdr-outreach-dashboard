@@ -1,8 +1,10 @@
+import "server-only";
 /**
  * Server-only Supabase client using the SERVICE ROLE key — read-only use against
  * the call-scoring project's tables (calls, call_quality_insights,
  * rep_coaching_snapshots). Never import from client components.
  * Returns null when env is missing so the dashboard degrades gracefully.
+ * Note: module-level cache means tests must vi.resetModules() between env changes.
  */
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
