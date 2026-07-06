@@ -3,6 +3,7 @@
 /** Raw row: rep_coaching_snapshots (subset we read). */
 export interface CoachingRow {
   hubspot_owner_id: string | null;
+  snapshot_date: string;
   period_type: "daily" | "weekly";
   period_end: string; // ISO date
   scope: string;
@@ -21,6 +22,7 @@ export interface CoachingRow {
 /** Latest weekly coaching snapshot per rep — drives the table column + drawer card. */
 export interface CoachingSnapshot {
   ownerId: string;
+  snapshotDate: string;
   periodEnd: string;
   callsAnalyzed: number;
   meetingsBooked: number;
@@ -61,8 +63,8 @@ export interface InsightRow {
   next_step_clarity: number | null;
   talk_control: number | null;
   crm_hygiene: number | null;
-  coachable_moments: string[];
-  quote_examples: string[];
+  coachable_moments: Array<Record<string, string | number | boolean | null> | string>;
+  quote_examples: Array<Record<string, string | number | boolean | null> | string>;
   recommended_next_action: string | null;
 }
 

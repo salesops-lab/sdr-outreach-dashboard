@@ -18,7 +18,7 @@ export async function getCoachingByRep(): Promise<Record<string, CoachingSnapsho
   const { data, error } = await sb
     .from("rep_coaching_snapshots")
     .select(
-      `hubspot_owner_id,period_type,period_end,scope,calls_analyzed,meetings_booked,
+      `hubspot_owner_id,snapshot_date,period_type,period_end,scope,calls_analyzed,meetings_booked,
       avg_bantic_score,avg_quality_score,weakest_dimension,top_strengths,top_risks,
       coaching_priorities,suggested_drills,manager_summary`,
     )
@@ -31,6 +31,7 @@ export async function getCoachingByRep(): Promise<Record<string, CoachingSnapsho
     console.error("[callquality] coaching fetch failed:", error.message);
     return {};
   }
+  if ((data?.length ?? 0) === 300) console.warn("[callquality] coaching snapshots hit the 300 cap — some reps may be missing.");
   return pickLatestSnapshots((data ?? []) as CoachingRow[]);
 }
 
@@ -61,6 +62,7 @@ export async function getRepCalls(ownerId: string): Promise<RepCallsPayload> {
     return empty;
   }
   const calls = (callRows ?? []) as CallRow[];
+  if (calls.length === 400) console.warn(`[callquality] calls window hit the 400 cap for owner ${ownerId}.`);
   const recent = calls.slice(0, DRILL_LIMIT);
 
   let insights: InsightRow[] = [];
@@ -71,7 +73,9 @@ export async function getRepCalls(ownerId: string): Promise<RepCallsPayload> {
         `hubspot_call_id,quality_score,discovery_quality,objection_handling,next_step_clarity,
         talk_control,crm_hygiene,coachable_moments,quote_examples,recommended_next_action`,
       )
-      .in("hubspot_call_id", recent.map((c) => c.hubspot_call_id));
+      .in("hubspot_call_id", recent.map((c) => c.hubspot_call_id))
+      // ascending updated_at: joinCallInsights' Map keeps the LAST row per call id, so the newest insight wins deterministically.
+      .order("updated_at", { ascending: true });
     if (iErr) console.error("[callquality] insights fetch failed:", iErr.message);
     else insights = (insightRows ?? []) as InsightRow[];
   }

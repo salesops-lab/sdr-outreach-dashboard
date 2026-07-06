@@ -5,6 +5,23 @@ import {
 } from "./types";
 
 const arr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
+
+/** Extract display text from JSONB list entries that may be strings or objects. */
+function textItems(v: unknown, keys: string[]): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const item of v) {
+    if (typeof item === "string") { if (item.trim()) out.push(item); continue; }
+    if (item && typeof item === "object") {
+      for (const k of keys) {
+        const t = (item as Record<string, unknown>)[k];
+        if (typeof t === "string" && t.trim()) { out.push(t); break; }
+      }
+    }
+  }
+  return out;
+}
+
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
 /** Latest weekly rep-scope snapshot per owner (input order-independent). */
@@ -13,9 +30,10 @@ export function pickLatestSnapshots(rows: CoachingRow[]): Record<string, Coachin
   for (const r of rows) {
     if (!r.hubspot_owner_id || r.period_type !== "weekly" || r.scope !== "rep") continue;
     const prev = out[r.hubspot_owner_id];
-    if (prev && prev.periodEnd >= r.period_end) continue;
+    if (prev && (prev.periodEnd > r.period_end || (prev.periodEnd === r.period_end && prev.snapshotDate >= r.snapshot_date))) continue;
     out[r.hubspot_owner_id] = {
       ownerId: r.hubspot_owner_id,
+      snapshotDate: r.snapshot_date,
       periodEnd: r.period_end,
       callsAnalyzed: r.calls_analyzed ?? 0,
       meetingsBooked: r.meetings_booked ?? 0,
@@ -73,8 +91,8 @@ export function joinCallInsights(calls: CallRow[], insights: InsightRow[]): Call
       overall: c.overall_score,
       dims: dimsOf(c),
       quality: i?.quality_score ?? null,
-      coachableMoments: arr(i?.coachable_moments),
-      quotes: arr(i?.quote_examples),
+      coachableMoments: textItems(i?.coachable_moments, ["moment", "coaching_move"]),
+      quotes: textItems(i?.quote_examples, ["quote", "label"]),
       nextAction: i?.recommended_next_action ?? null,
     };
   });
