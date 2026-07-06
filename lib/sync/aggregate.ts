@@ -61,8 +61,8 @@ function normalizeGdStage(raw: string | null | undefined): StageGroup {
   }
 }
 
-interface CompanyStat {
-  contacts: Set<string>;
+/** The engagement fields the temperature rules read — CompanyStat and RoofAcc both satisfy it. */
+interface TouchStat {
   calls: number;
   emails: number;
   connected: number;
@@ -70,6 +70,10 @@ interface CompanyStat {
   highIntent: boolean;
   opened: number;
   replied: number;
+}
+
+interface CompanyStat extends TouchStat {
+  contacts: Set<string>;
 }
 
 interface Acc {
@@ -117,6 +121,20 @@ function newRoofAcc(): RoofAcc {
   return { calls: 0, emails: 0, connected: 0, lastMs: 0, meeting: false, highIntent: false, opened: 0, replied: 0, contacts: new Map() };
 }
 
+/** Shared per-activity company-touch bookkeeping (business rules live in ONE place). */
+function recordTouch(s: TouchStat, a: Activity): void {
+  if (a.type === "call") {
+    s.calls++;
+    if (a.disposition && isConnected(a.disposition)) s.connected++;
+    if (isMeeting(a.disposition)) s.meeting = true;
+    if (isHighIntent(a.disposition)) s.highIntent = true;
+  } else {
+    s.emails++;
+    if (a.emailOpened) s.opened++;
+    if (a.emailReplied) s.replied++;
+  }
+}
+
 function applyActivity(acc: Acc, a: Activity): void {
   if (a.type === "call") {
     acc.callsTotal++;
@@ -144,16 +162,7 @@ function applyActivity(acc: Acc, a: Activity): void {
   for (const co of a.companyIds) {
     const s = acc.companyStat.get(co) ?? { contacts: new Set<string>(), calls: 0, emails: 0, connected: 0, meeting: false, highIntent: false, opened: 0, replied: 0 };
     a.contactIds.forEach((c) => s.contacts.add(c));
-    if (a.type === "call") {
-      s.calls++;
-      if (a.disposition && isConnected(a.disposition)) s.connected++;
-      if (isMeeting(a.disposition)) s.meeting = true;
-      if (isHighIntent(a.disposition)) s.highIntent = true;
-    } else {
-      s.emails++;
-      if (a.emailOpened) s.opened++;
-      if (a.emailReplied) s.replied++;
-    }
+    recordTouch(s, a);
     acc.companyStat.set(co, s);
   }
 
@@ -163,13 +172,13 @@ function applyActivity(acc: Acc, a: Activity): void {
 const round = (n: number, dp = 2) => Math.round(n * 10 ** dp) / 10 ** dp;
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
-function temperatureOf(s: CompanyStat): Temperature {
+function temperatureOf(s: TouchStat): Temperature {
   if (s.meeting || s.highIntent || s.replied > 0) return "hot";
   if (s.connected > 0 || s.opened > 0 || s.calls + s.emails >= 3) return "warm";
   return "cold";
 }
 
-function temperatureReason(s: CompanyStat): string {
+function temperatureReason(s: TouchStat): string {
   const touches = s.calls + s.emails;
   if (s.meeting) return "Meeting booked";
   if (s.highIntent) return "High-intent callback";
@@ -382,8 +391,7 @@ function bookInsights(b: BookCoverage): Insight[] {
 }
 
 /** Build the top-5 engaged-contact list for one rooftop's accumulator. */
-function rooftopContacts(stat: RoofAcc | undefined, contactMeta: Record<string, ContactMeta>): RooftopContact[] {
-  if (!stat) return [];
+function rooftopContacts(stat: RoofAcc, contactMeta: Record<string, ContactMeta>): RooftopContact[] {
   return [...stat.contacts.entries()]
     .map(([id, c]) => {
       const meta = contactMeta[id];
@@ -446,32 +454,15 @@ function computeBookCoverage(
 
     const rooftops: RooftopDetail[] = u.rooftops.map((r) => {
       const rTapped = everTapped.has(r.id);
-      const stat = roofStats.get(r.id);
-      const calls = stat?.calls ?? 0;
-      const emails = stat?.emails ?? 0;
-      const connected = stat?.connected ?? 0;
-      const last_ms = stat && stat.lastMs ? stat.lastMs : null;
-
-      let temp: Temperature;
-      let temp_reason: string;
-      if (!rTapped) {
-        temp = "cold";
-        temp_reason = "Untouched";
-      } else {
-        const cs: CompanyStat = {
-          contacts: new Set(stat ? stat.contacts.keys() : []),
-          calls, emails, connected,
-          meeting: stat?.meeting ?? false,
-          highIntent: stat?.highIntent ?? false,
-          opened: stat?.opened ?? 0,
-          replied: stat?.replied ?? 0,
-        };
-        temp = temperatureOf(cs);
-        temp_reason = temperatureReason(cs);
-      }
+      const stat = roofStats.get(r.id) ?? newRoofAcc(); // RoofAcc satisfies TouchStat directly
+      const untapped = !rTapped;
 
       return {
-        id: r.id, name: r.name, tapped: rTapped, calls, emails, connected, last_ms, temp, temp_reason,
+        id: r.id, name: r.name, tapped: rTapped,
+        calls: stat.calls, emails: stat.emails, connected: stat.connected,
+        last_ms: stat.lastMs || null,
+        temp: untapped ? "cold" : temperatureOf(stat),
+        temp_reason: untapped ? "Untouched" : temperatureReason(stat),
         contacts: rooftopContacts(stat, contactMeta),
       };
     });
@@ -544,16 +535,7 @@ export function aggregate(
       tappedSet.add(co);
 
       const racc = roofMap.get(co) ?? newRoofAcc();
-      if (a.type === "call") {
-        racc.calls++;
-        if (a.disposition && isConnected(a.disposition)) racc.connected++;
-        if (isMeeting(a.disposition)) racc.meeting = true;
-        if (isHighIntent(a.disposition)) racc.highIntent = true;
-      } else {
-        racc.emails++;
-        if (a.emailOpened) racc.opened++;
-        if (a.emailReplied) racc.replied++;
-      }
+      recordTouch(racc, a);
       racc.lastMs = Math.max(racc.lastMs, a.timestampMs);
       for (const cid of a.contactIds) {
         const ct = racc.contacts.get(cid) ?? { calls: 0, emails: 0 };

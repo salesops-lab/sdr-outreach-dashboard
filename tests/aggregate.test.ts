@@ -168,4 +168,18 @@ describe("aggregate", () => {
   it("sorts units groups-first then singles by name", () => {
     expect(book.units.map((u) => u.key)).toEqual(["gd:900", "single:X", "single:Z"]);
   });
+
+  it("caps rooftop contacts at top-5 by touches", () => {
+    const many: Activity[] = ["P1", "P2", "P3", "P4", "P5", "P6"].flatMap((c, i) =>
+      Array.from({ length: i + 1 }, () => act({ type: "call", disposition: BUSY, contactIds: [c], companyIds: ["X"] })),
+    );
+    const snap2 = aggregate(
+      [...activities, ...many],
+      { X: "Acme" }, {}, contactMeta, owned, ctx, NOW, { calls: true, emails: true },
+    );
+    const roof = snap2.reps[REP].book.units.find((u) => u.key === "single:X")!.rooftops[0];
+    expect(roof.contacts).toHaveLength(5);
+    expect(roof.contacts[0].id).toBe("P6"); // 6 touches, most engaged
+    expect(roof.contacts.map((c) => c.id)).not.toContain("P1"); // 1 touch + A/B outweighed — dropped
+  });
 });
