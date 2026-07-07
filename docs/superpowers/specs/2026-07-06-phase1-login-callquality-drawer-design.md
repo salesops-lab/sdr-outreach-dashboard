@@ -121,3 +121,13 @@ call-scoring pipeline (UNTOUCHED) ──▶ Supabase Postgres
 - P2: full RBAC (rep/manager/leadership), SDR data migrated into Postgres, RLS policies.
 - P3: incremental sync (delta by `hs_lastmodifieddate`), replacing the ~1-hour full re-pull.
 - Per-account call scores / AE-handoff surfacing; intelly-style visual reskin.
+
+## Amendment (2026-07-06, mid-execution)
+
+User re-focus: the drawer's **centerpiece is a GD Book Explorer** — per rep: assigned GD/Single units →
+rooftops within each unit (engaged vs untapped, cumulative owner-scoped) → top-5 engaged contacts per
+rooftop (by touches; name/title/DM, call+email counts, HubSpot links) → rooftop activity depth
+(calls, emails, connected, last touch, cumulative temperature hot/warm/cold with reason). All figures
+derive from the same anchored, owner-scoped activity set as `BookCoverage`, so explorer and coverage
+numbers reconcile exactly. Requires sync-side data (`BookCoverage.units`) and a re-sync before live data.
+Call-quality (BANTIC scorecard + call drill-down) stays, demoted to a secondary card below the explorer.

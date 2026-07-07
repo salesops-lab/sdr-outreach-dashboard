@@ -1288,3 +1288,14 @@ Expected: tests green, build green, Vercel deploys. Verify production: unauthent
 
 - Spec coverage: auth gate (T4, T8), spyne.ai enforcement (T4 S3), call-quality reads server-side w/ service key (T1, T3), BANTIC scorecard + coaching (T6 S4), call drill-down (T6 S5), Call Q table column (T5), drawer container + mobile sheet (T6 S2), main-page mobile pass (T7), graceful degradation (T1 S1, T3, T6, T8 S3), tests (T2), call-scoring untouched (read-only queries only). Out-of-scope items from spec not implemented — correct.
 - Types used in later tasks (`CoachingSnapshot`, `RepCallsPayload`, `BANTIC_DIMS`, `Row`) are all defined in T2/T5-6 exports.
+
+## Amendment (2026-07-06, mid-execution)
+
+Scope reshape after Batch B: Tasks 5–6 are superseded by:
+- **Task 5′ (sync-side GD book units):** extend `lib/sync/types.ts` (`RooftopDetail`, `BookUnitDetail`,
+  `BookCoverage.units`), accumulate per-rooftop cumulative stats + per-contact touches (owner-scoped,
+  anchored) in `lib/sync/aggregate.ts`, top-5 contacts per rooftop, cumulative rooftop temperature;
+  extend `tests/aggregate.test.ts`.
+- **Task 6′ (UI):** `RepDrawer` centerpiece = `GdExplorer` (units → rooftops → contacts → activities);
+  `CallQualityCard` + `CallsDrilldown` kept as secondary card below; Call Q column + API route unchanged.
+Batches: C = Task 4 (auth, unchanged) → D = 5′+6′ → E = Task 7 (unchanged) → final review → Task 8 (+ re-sync).

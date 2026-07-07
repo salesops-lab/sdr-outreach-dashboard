@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   PERIOD_KEYS, PERIOD_LABELS, NARROW_PERIODS, STAGE_GROUPS, MARKET_SEGMENTS, MARKET_SEGMENT_LABELS,
   PeriodKey, PeriodMetrics, RepData, Snapshot, DailyPoint, ReachByChannel, Insight, StageGroup,
@@ -8,10 +8,16 @@ import {
 } from "../lib/sync/types";
 import { CONNECTED_DISPOSITIONS } from "../config/dispositions";
 import { companyUrl, contactUrl } from "../config/hubspot";
+import { CoachingSnapshot } from "../lib/callquality/types";
+import RepDrawer from "./RepDrawer";
+import GdExplorer from "./GdExplorer";
+import CallQualityCard from "./CallQualityCard";
+import LogoutButton from "./LogoutButton";
+import { STAGE_CHIP, TEMP_CHIP, TEMP_ICON } from "./ui-tokens";
 
 const CONNECTED_LABELS = new Set(Object.values(CONNECTED_DISPOSITIONS));
 
-type SortKey = "name" | "quality" | "touches" | "contacts" | "companies" | "coverage" | "connect" | "reply" | "meetings" | "hot";
+type SortKey = "name" | "quality" | "callq" | "touches" | "contacts" | "companies" | "coverage" | "connect" | "reply" | "meetings" | "hot";
 
 interface Row { ownerId: string; name: string; data: RepData; m: PeriodMetrics; touches: number; }
 
@@ -35,22 +41,13 @@ const GRADE_GRAD: Record<string, string> = {
   "—": "from-slate-200 to-slate-200 text-slate-400",
 };
 
-const STAGE_CHIP: Record<StageGroup, string> = {
-  Prospect: "bg-slate-100 text-slate-600",
-  "In Pipeline": "bg-violet-100 text-violet-700",
-  "Contract Closed": "bg-emerald-100 text-emerald-700",
-  "Drop Off": "bg-rose-100 text-rose-700",
-  Other: "bg-slate-50 text-slate-400",
-};
-const TEMP_CHIP: Record<string, string> = { hot: "bg-gradient-to-br from-rose-500 to-orange-500 text-white", warm: "bg-amber-400 text-white", cold: "bg-sky-400 text-white" };
-const TEMP_ICON: Record<string, string> = { hot: "🔥", warm: "🌤", cold: "🧊" };
-
-export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
+export default function Dashboard({ snapshot, coaching }: { snapshot: Snapshot; coaching: Record<string, CoachingSnapshot> }) {
   const [period, setPeriod] = useState<PeriodKey>("this_week");
   const [repFilter, setRepFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("touches");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [drawerRep, setDrawerRep] = useState<string | null>(null);
+  const closeDrawer = useCallback(() => setDrawerRep(null), []);
 
   const allRows = useMemo<Row[]>(() =>
     Object.entries(snapshot.reps).map(([ownerId, data]) => {
@@ -61,7 +58,7 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
   const rows = useMemo<Row[]>(() => {
     const filtered = repFilter === "all" ? allRows : allRows.filter((r) => r.ownerId === repFilter);
     const val = (r: Row): number | string => ({
-      name: r.name.toLowerCase(), quality: r.m.quality.score, touches: r.touches,
+      name: r.name.toLowerCase(), quality: r.m.quality.score, callq: coaching[r.ownerId]?.avgBantic ?? -1, touches: r.touches,
       contacts: r.m.contacts.total, companies: r.m.companies.total, coverage: r.data.book.pct,
       connect: r.m.calls.connect_rate, reply: r.m.emails.reply_rate, meetings: r.m.meetings_booked, hot: r.m.temp.hot,
     }[sortKey]);
@@ -70,7 +67,7 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
       const cmp = typeof av === "string" && typeof bv === "string" ? av.localeCompare(bv) : (av as number) - (bv as number);
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [allRows, repFilter, sortKey, sortDir]);
+  }, [allRows, repFilter, sortKey, sortDir, coaching]);
 
   const summary = useMemo(() => {
     const a = { touches: 0, contacts: 0, companies: 0, calls: 0, connected: 0, denom: 0, meetings: 0, unitsTapped: 0, unitsTotal: 0, hot: 0, active: 0 };
@@ -89,8 +86,8 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
   }
 
   function exportCsv() {
-    const head = ["Rep","Quality","Grade","Touches","Calls","Emails","OpenRate","ReplyRate","UniqContacts","DMcontacts","UniqCompanies","BookUnits","GDs","Singles","UnitsTapped","Coverage","ConnectRate","Meetings","Hot","Warm","Cold"];
-    const lines = rows.map((r) => { const m = r.m; const b = r.data.book; return [`"${r.name.replace(/"/g,'""')}"`, m.quality.score, m.quality.grade, r.touches, m.calls.total, m.emails.sent, m.emails.open_rate, m.emails.reply_rate, m.contacts.total, m.dm_contacts, m.companies.total, b.units_total, b.gds, b.singles, b.units_tapped, b.pct, m.calls.connect_rate, m.meetings_booked, m.temp.hot, m.temp.warm, m.temp.cold].join(","); });
+    const head = ["Rep","Quality","Grade","CallQ","Touches","Calls","Emails","OpenRate","ReplyRate","UniqContacts","DMcontacts","UniqCompanies","BookUnits","GDs","Singles","UnitsTapped","Coverage","ConnectRate","Meetings","Hot","Warm","Cold"];
+    const lines = rows.map((r) => { const m = r.m; const b = r.data.book; return [`"${r.name.replace(/"/g,'""')}"`, m.quality.score, m.quality.grade, coaching[r.ownerId]?.avgBantic ?? "", r.touches, m.calls.total, m.emails.sent, m.emails.open_rate, m.emails.reply_rate, m.contacts.total, m.dm_contacts, m.companies.total, b.units_total, b.gds, b.singles, b.units_tapped, b.pct, m.calls.connect_rate, m.meetings_booked, m.temp.hot, m.temp.warm, m.temp.cold].join(","); });
     const url = URL.createObjectURL(new Blob([[head.join(","), ...lines].join("\n")], { type: "text/csv" }));
     const a = document.createElement("a"); a.href = url; a.download = `sdr-outreach-${period}-${snapshot.today_et || "snap"}.csv`; a.click(); URL.revokeObjectURL(url);
   }
@@ -101,12 +98,13 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
     <main className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6">
       <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 bg-clip-text text-3xl font-black tracking-tight text-transparent">
+          <h1 className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 bg-clip-text text-2xl font-black tracking-tight text-transparent sm:text-3xl">
             SDR Outreach Coverage
           </h1>
-          <p className="mt-1 text-sm text-slate-500">Quantity × quality of outbound, per rep · reach by activity · cumulative owned-book coverage (GD level) · US/Eastern · week starts Mon</p>
+          <p className="mt-1 hidden text-sm text-slate-500 sm:block">Quantity × quality of outbound, per rep · reach by activity · cumulative owned-book coverage (GD level) · US/Eastern · week starts Mon</p>
         </div>
-        <div className="text-right text-xs text-slate-500">
+        <div className="flex flex-col items-end gap-1 text-right text-xs text-slate-500">
+          <LogoutButton />
           <div>Refreshed <span className="font-semibold text-blue-600">{etStamp(snapshot.generated_at_utc)}</span></div>
           <div>{snapshot.window.start_et || "—"} → {snapshot.window.end_et || "—"} · {fmt(snapshot.totals.calls)} calls + {fmt(snapshot.totals.emails)} emails</div>
         </div>
@@ -143,11 +141,12 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
       </div>
 
       <div className="scroll-x rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <table className="w-full min-w-[1080px] border-collapse text-sm">
+        <table className="w-full min-w-[1160px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
               <Th onClick={() => toggleSort("name")} a={sortKey === "name"} d={sortDir}>Rep</Th>
               <Th onClick={() => toggleSort("quality")} a={sortKey === "quality"} d={sortDir}>Quality</Th>
+              <Th onClick={() => toggleSort("callq")} a={sortKey === "callq"} d={sortDir}>Call Q</Th>
               <Th right onClick={() => toggleSort("touches")} a={sortKey === "touches"} d={sortDir}>Touches</Th>
               <Th right onClick={() => toggleSort("contacts")} a={sortKey === "contacts"} d={sortDir}>Contacts</Th>
               <Th right onClick={() => toggleSort("companies")} a={sortKey === "companies"} d={sortDir}>Cos</Th>
@@ -159,7 +158,7 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => <RepRow key={r.ownerId} row={r} period={period} isOpen={expanded === r.ownerId} onToggle={() => setExpanded(expanded === r.ownerId ? null : r.ownerId)} />)}
+            {rows.map((r) => <RepRow key={r.ownerId} row={r} coach={coaching[r.ownerId]} onOpen={() => setDrawerRep(r.ownerId)} />)}
           </tbody>
         </table>
       </div>
@@ -168,6 +167,20 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
         Coverage = cumulative owned accounts (company owner = rep) the rep has ever tapped, rolled up to Group Dealership / Single units. Temperature: 🔥 meeting/high-intent/replied · 🌤 connected/opened · 🧊 no engagement.
         Quality = conversations · depth · persistence · channel · deliverability. Decision-maker reach via job title/seniority. Per-account detail (HubSpot links) for {NARROW_PERIODS.map((p) => PERIOD_LABELS[p]).join(", ")}.
       </p>
+
+      {drawerRep && (() => {
+        const r = allRows.find((x) => x.ownerId === drawerRep);
+        return r ? (
+          <RepDrawer
+            title={r.name}
+            badge={<GradeBadge grade={r.m.quality.grade} score={r.m.quality.score} />}
+            subtitle={PERIOD_LABELS[period]}
+            onClose={closeDrawer}
+          >
+            <Scorecard key={drawerRep} data={r.data} m={r.m} period={period} name={r.name} coach={coaching[drawerRep]} ownerId={drawerRep} />
+          </RepDrawer>
+        ) : null;
+      })()}
     </main>
   );
 }
@@ -204,37 +217,41 @@ function MiniBar({ x, color }: { x: number; color: string }) {
   return <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-200"><div className={`h-full ${color}`} style={{ width: pct0(x) }} /></div>;
 }
 
-function RepRow({ row, period, isOpen, onToggle }: { row: Row; period: PeriodKey; isOpen: boolean; onToggle: () => void }) {
+function RepRow({ row, coach, onOpen }: { row: Row; coach?: CoachingSnapshot; onOpen: () => void }) {
   const m = row.m;
   const dim = row.touches === 0;
   return (
-    <>
-      <tr onClick={onToggle} className={`cursor-pointer border-b border-slate-100 transition hover:bg-blue-50/50 ${dim ? "opacity-50" : ""} ${isOpen ? "bg-blue-50/70" : ""}`}>
-        <td className="px-3 py-2.5 font-semibold text-slate-800"><span className="mr-2 text-slate-400">{isOpen ? "▾" : "▸"}</span>{row.name}</td>
-        <td className="px-3 py-2.5"><GradeBadge grade={m.quality.grade} score={m.quality.score} /></td>
-        <td className="px-3 py-2.5 text-right font-bold tabular-nums text-slate-900">{fmt(row.touches)}</td>
-        <td className="px-3 py-2.5 text-right tabular-nums">{fmt(m.contacts.total)}<span className="ml-1 text-[10px] text-slate-400">☎{fmt(m.contacts.via_call)}/✉{fmt(m.contacts.via_email)}</span></td>
-        <td className="px-3 py-2.5 text-right tabular-nums">{fmt(m.companies.total)}</td>
-        <td className="px-3 py-2.5">{row.data.book.units_total > 0 ? <div className="flex items-center gap-2"><MiniBar x={row.data.book.pct} color="bg-gradient-to-r from-violet-500 to-fuchsia-500" /><span className="tabular-nums text-xs text-slate-500">{pct0(row.data.book.pct)}</span></div> : <span className="text-xs text-slate-300">—</span>}</td>
-        <td className="px-3 py-2.5"><div className="flex items-center gap-2"><MiniBar x={m.calls.connect_rate} color="bg-emerald-500" /><span className="tabular-nums text-xs text-slate-500">{pct0(m.calls.connect_rate)}</span></div></td>
-        <td className="px-3 py-2.5 tabular-nums text-xs text-slate-500">{m.emails.sent > 0 ? pct0(m.emails.reply_rate) : "—"}</td>
-        <td className="px-3 py-2.5 text-right tabular-nums">{m.meetings_booked > 0 ? <span className="font-bold text-emerald-600">{m.meetings_booked}</span> : <span className="text-slate-300">0</span>}</td>
-        <td className="px-3 py-2.5 text-right tabular-nums">{m.temp.hot > 0 ? <span className="font-bold text-rose-600">{m.temp.hot}</span> : <span className="text-slate-300">0</span>}</td>
-      </tr>
-      {isOpen && <tr className="border-b border-slate-200 bg-slate-50/80"><td colSpan={10} className="px-4 py-5"><Scorecard data={row.data} m={m} period={period} name={row.name} /></td></tr>}
-    </>
+    <tr onClick={onOpen} className={`cursor-pointer border-b border-slate-100 transition hover:bg-blue-50/50 ${dim ? "opacity-50" : ""}`}>
+      <td className="px-3 py-2.5 font-semibold text-slate-800">{row.name}</td>
+      <td className="px-3 py-2.5"><GradeBadge grade={m.quality.grade} score={m.quality.score} /></td>
+      <td className="px-3 py-2.5">
+        {coach?.avgBantic != null
+          ? <span className="rounded-lg bg-indigo-50 px-2 py-0.5 text-xs font-bold tabular-nums text-indigo-700 ring-1 ring-indigo-200">{coach.avgBantic.toFixed(1)}<span className="font-medium opacity-60">/10</span></span>
+          : <span className="text-xs text-slate-300">—</span>}
+      </td>
+      <td className="px-3 py-2.5 text-right font-bold tabular-nums text-slate-900">{fmt(row.touches)}</td>
+      <td className="px-3 py-2.5 text-right tabular-nums">{fmt(m.contacts.total)}<span className="ml-1 text-[10px] text-slate-400">☎{fmt(m.contacts.via_call)}/✉{fmt(m.contacts.via_email)}</span></td>
+      <td className="px-3 py-2.5 text-right tabular-nums">{fmt(m.companies.total)}</td>
+      <td className="px-3 py-2.5">{row.data.book.units_total > 0 ? <div className="flex items-center gap-2"><MiniBar x={row.data.book.pct} color="bg-gradient-to-r from-violet-500 to-fuchsia-500" /><span className="tabular-nums text-xs text-slate-500">{pct0(row.data.book.pct)}</span></div> : <span className="text-xs text-slate-300">—</span>}</td>
+      <td className="px-3 py-2.5"><div className="flex items-center gap-2"><MiniBar x={m.calls.connect_rate} color="bg-emerald-500" /><span className="tabular-nums text-xs text-slate-500">{pct0(m.calls.connect_rate)}</span></div></td>
+      <td className="px-3 py-2.5 tabular-nums text-xs text-slate-500">{m.emails.sent > 0 ? pct0(m.emails.reply_rate) : "—"}</td>
+      <td className="px-3 py-2.5 text-right tabular-nums">{m.meetings_booked > 0 ? <span className="font-bold text-emerald-600">{m.meetings_booked}</span> : <span className="text-slate-300">0</span>}</td>
+      <td className="px-3 py-2.5 text-right tabular-nums">{m.temp.hot > 0 ? <span className="font-bold text-rose-600">{m.temp.hot}</span> : <span className="text-slate-300">0</span>}</td>
+    </tr>
   );
 }
 
-function Scorecard({ data, m, period, name }: { data: RepData; m: PeriodMetrics; period: PeriodKey; name: string }) {
+function Scorecard({ data, m, period, name, coach, ownerId }: { data: RepData; m: PeriodMetrics; period: PeriodKey; name: string; coach?: CoachingSnapshot; ownerId: string }) {
   return (
     <div className="space-y-5">
       <InsightChips insights={m.insights} />
       <KpiStrip m={m} />
+      <GdExplorer ownerId={ownerId} book={data.book} />
       <div className="grid gap-5 lg:grid-cols-2">
         <CoverageCard book={data.book} />
         <TempCard m={m} />
       </div>
+      <CallQualityCard coach={coach} ownerId={ownerId} />
       <div className="grid gap-5 lg:grid-cols-3">
         <ReachCard m={m} />
         <QualityCard m={m} />

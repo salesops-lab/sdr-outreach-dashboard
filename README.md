@@ -41,13 +41,18 @@ sync can exceed serverless time limits.
 
 ```bash
 npm install
-cp .env.local.example .env.local   # add your HUBSPOT_PAT
+cp .env.local.example .env.local   # add HUBSPOT_PAT + the three Supabase vars
 npm run sync                       # pull from HubSpot → data/snapshot.json
 npm run dev                        # http://localhost:3000
 ```
 
 Required HubSpot Private App scopes: `crm.objects.contacts.read`,
 `crm.objects.companies.read`, and engagement (calls/emails) + associations read.
+
+Supabase (same project as call-scoring-agent) powers **login** (Google SSO, @spyne.ai only)
+and the **call-quality merge** (BANTIC/coaching, read-only). Env vars: `NEXT_PUBLIC_SUPABASE_URL`
++ `NEXT_PUBLIC_SUPABASE_ANON_KEY` (auth) and `SUPABASE_SERVICE_ROLE_KEY` (server-only reads).
+Without them, local dev runs ungated with call-quality disabled; **production fails closed (503)**.
 
 ## Commands
 
@@ -61,9 +66,16 @@ Required HubSpot Private App scopes: `crm.objects.contacts.read`,
 ## Deploy (Vercel)
 
 1. Import the repo into Vercel.
-2. Set env var `HUBSPOT_PAT` (and optionally `BLOB_READ_WRITE_TOKEN`).
-3. Deploy. The dashboard reads the committed `data/snapshot.json` (or the newest Vercel
-   Blob if configured).
+2. Set env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+   `SUPABASE_SERVICE_ROLE_KEY` (**required** — the auth middleware 503s without the first two),
+   plus `HUBSPOT_PAT` (and optionally `BLOB_READ_WRITE_TOKEN`).
+3. In the Supabase project (call-scoring), enable the **Google provider** (GCP OAuth client;
+   redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`) and set the Site URL to the
+   Vercel domain. Prefer an **Internal** GCP OAuth app to hard-restrict to the spyne.ai Workspace.
+4. Verify RLS/policies deny `anon` reads on the call-scoring tables (`calls`,
+   `call_quality_insights`, `rep_coaching_snapshots`) — the anon key ships to browsers.
+5. Deploy. The dashboard reads the committed `data/snapshot.json` (or the newest Vercel
+   Blob if configured); call-quality data is read live from Supabase per request.
 
 ## Refresh
 

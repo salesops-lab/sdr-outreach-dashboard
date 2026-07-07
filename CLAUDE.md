@@ -90,15 +90,36 @@ once per rep on `RepData.book` (see below), because it is cumulative.
 - **Company attribution order** (`lib/sync/associate.ts`): primary company of each associated
   contact; if an activity has no contact, a direct engagement→company association; else counted as
   unattributed.
-- **Secrets live only in `.env.local` / Vercel / GitHub secrets** — `HUBSPOT_PAT` (required) and
-  `BLOB_READ_WRITE_TOKEN` (optional, enables no-redeploy refresh). Never commit them.
+- **Secrets live only in `.env.local` / Vercel / GitHub secrets** — `HUBSPOT_PAT` (required for
+  sync), `BLOB_READ_WRITE_TOKEN` (optional, enables no-redeploy refresh), plus three Supabase vars
+  required by the web app: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (auth) and
+  `SUPABASE_SERVICE_ROLE_KEY` (server-only call-quality reads). **In production the middleware
+  fails CLOSED (503 on every route) if the two `NEXT_PUBLIC_SUPABASE_*` vars are missing** — set
+  them in Vercel before deploying. Never commit any of these.
+- **Auth gate (Phase 1).** Every route requires a Supabase Google SSO session belonging to an
+  `@spyne.ai` account. `middleware.ts` is the single source of truth (session + domain via
+  `lib/auth/domain.ts`); the OAuth callback's domain check is belt-and-braces and explicitly
+  expires cookies on rejection. `/api/*` gets JSON 401; pages redirect to `/login`. Missing env =
+  pass-through in dev, 503 in prod.
+- **Call-quality merge (read-only).** The app reads the call-scoring project's Supabase tables
+  (`rep_coaching_snapshots`, `calls`, `call_quality_insights`) server-side via the service-role
+  key (`lib/supabase/admin.ts`, guarded by `server-only`; `lib/callquality/*`). Call-scoring
+  itself is never modified. Coaching loads with the page; per-rep calls + book units lazy-load
+  via `/api/rep/[ownerId]/calls` and `/api/rep/[ownerId]/book`.
+- **`BookCoverage.units` is stripped from the client payload** (`stripBookUnits` in
+  `lib/snapshot.ts`) — the full rooftop drill-down would ~5× the page payload. The drawer fetches
+  one rep's units from `/api/rep/[ownerId]/book` instead. Keep it that way.
 
 ## UI notes
 
-`components/Dashboard.tsx` is one large client component. **There is no charting library** — the
-donut, stacked bars, and daily trend are all pure HTML/CSS (Tailwind + conic-gradient / flex
-widths). State is local (`useState` + `useMemo`); no global store. HubSpot deep-links use the
-builders in `config/hubspot.ts` (portal `242626590`, app-na2).
+`components/Dashboard.tsx` is the main client component; clicking a rep row opens a slide-over
+drawer (`RepDrawer`, children-based to avoid an import cycle) whose centerpiece is the
+**GD Book Explorer** (`GdExplorer`: units → rooftops → contacts → activities) with a call-quality
+card (`CallQualityCard` + `CallsDrilldown`) below. Shared chip/icon lookups live in
+`components/ui-tokens.ts`. **There is no charting library** — the donut, stacked bars, and daily
+trend are all pure HTML/CSS (Tailwind + conic-gradient / flex widths). State is local
+(`useState` + `useMemo`); no global store. HubSpot deep-links use the builders in
+`config/hubspot.ts` (portal `242626590`, app-na2).
 
 ## Derived-metric definitions (all in `lib/sync/aggregate.ts`)
 

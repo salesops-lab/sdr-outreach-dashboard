@@ -139,4 +139,47 @@ describe("aggregate", () => {
     expect(book.untapped_sample.map((u) => u.name)).toContain("Zeta");
     expect(book.insights.some((i) => i.text.toLowerCase().includes("tapped"))).toBe(true);
   });
+
+  it("builds GD/single units with rooftop drill-down that reconciles with coverage", () => {
+    expect(book.units).toHaveLength(3);
+    expect(book.units.filter((u) => u.tapped)).toHaveLength(book.units_tapped);
+    const gd = book.units[0]; // groups sort first
+    expect(gd.key).toBe("gd:900");
+    expect(gd.isGroup).toBe(true);
+    expect(gd.tapped).toBe(true);
+    expect(gd.rooftops.map((r) => r.id)).toEqual(["G1", "G2"]); // tapped first
+    const g1 = gd.rooftops[0];
+    expect(g1).toMatchObject({ tapped: true, calls: 1, connected: 1, emails: 0, last_ms: NOW - 60 * DAY_MS });
+    expect(g1.temp).toBe("warm"); // connected but no meeting/reply
+    expect(g1.contacts).toEqual([]); // that call carried no contacts
+    const g2 = gd.rooftops[1];
+    expect(g2).toMatchObject({ tapped: false, temp: "cold", temp_reason: "Untouched", last_ms: null });
+  });
+
+  it("ranks engaged contacts per rooftop (top-5 by touches, meta attached)", () => {
+    const acme = book.units.find((u) => u.key === "single:X")!;
+    expect(acme.rooftops).toHaveLength(1);
+    const contacts = acme.rooftops[0].contacts;
+    expect(contacts.map((c) => c.id)).toEqual(["A", "B"]); // A: 2 touches, B: 1
+    expect(contacts[0]).toMatchObject({ name: "Alice Owner", title: "Owner", dm: true, calls: 1, emails: 1 });
+    expect(contacts[1]).toMatchObject({ name: "Bob Rep", calls: 1, emails: 0 });
+  });
+
+  it("sorts units groups-first then singles by name", () => {
+    expect(book.units.map((u) => u.key)).toEqual(["gd:900", "single:X", "single:Z"]);
+  });
+
+  it("caps rooftop contacts at top-5 by touches", () => {
+    const many: Activity[] = ["P1", "P2", "P3", "P4", "P5", "P6"].flatMap((c, i) =>
+      Array.from({ length: i + 1 }, () => act({ type: "call", disposition: BUSY, contactIds: [c], companyIds: ["X"] })),
+    );
+    const snap2 = aggregate(
+      [...activities, ...many],
+      { X: "Acme" }, {}, contactMeta, owned, ctx, NOW, { calls: true, emails: true },
+    );
+    const roof = snap2.reps[REP].book.units.find((u) => u.key === "single:X")!.rooftops[0];
+    expect(roof.contacts).toHaveLength(5);
+    expect(roof.contacts[0].id).toBe("P6"); // 6 touches, most engaged
+    expect(roof.contacts.map((c) => c.id)).not.toContain("P1"); // 1 touch + A/B outweighed — dropped
+  });
 });

@@ -49,6 +49,7 @@ function emptyBook(): BookCoverage {
     by_dealership: { Franchise: emptyDim(), Independent: emptyDim(), Unknown: emptyDim() },
     by_segment,
     by_group_kind: { group: emptyDim(), single: emptyDim() },
+    units: [],
     untapped_sample: [],
     insights: [],
   };
@@ -106,4 +107,16 @@ async function loadFromFile(): Promise<Snapshot | null> {
 
 export async function getSnapshot(): Promise<Snapshot> {
   return (await loadFromBlob()) ?? (await loadFromFile()) ?? emptySnapshot();
+}
+
+/**
+ * Strip the heavy per-rooftop book detail before the snapshot crosses to the client.
+ * The drawer lazy-loads one rep's units via /api/rep/[ownerId]/book instead.
+ */
+export function stripBookUnits(s: Snapshot): Snapshot {
+  const reps: Snapshot["reps"] = {};
+  for (const [id, r] of Object.entries(s.reps)) {
+    reps[id] = { ...r, book: { ...r.book, units: [] } };
+  }
+  return { ...s, reps };
 }

@@ -110,19 +110,40 @@ export const MARKET_SEGMENT_LABELS: Record<MarketSegment, string> = {
 
 export type DealershipType = "Franchise" | "Independent" | "Unknown";
 
-/**
- * One owned "unit" at Group-Dealership / Single granularity. A group unit collapses all
- * of the rep's owned rooftops that share a gd_id; a single is a lone rooftop.
- */
-export interface BookUnit {
-  key: string; // `gd:${gdId}` for a group, `single:${companyId}` otherwise
+/** One engaged contact on a rooftop (top-5 by touches). */
+export interface RooftopContact {
+  id: string;
+  name: string;
+  title?: string;
+  dm?: boolean;
+  calls: number;
+  emails: number;
+}
+
+/** One owned rooftop inside a book unit — cumulative, owner-scoped engagement. */
+export interface RooftopDetail {
+  id: string;
+  name: string;
+  tapped: boolean;
+  calls: number; // outbound calls by the OWNING rep (anchor window)
+  emails: number;
+  connected: number; // calls that reached a human
+  last_ms: number | null; // epoch ms of the rep's latest touch; null if untapped
+  temp: Temperature; // cumulative temperature ("cold" + reason "Untouched" when untapped)
+  temp_reason: string;
+  contacts: RooftopContact[]; // top 5 engaged contacts by touches (calls+emails desc)
+}
+
+/** A GD/Single unit with rooftop drill-down — the Book Explorer's data. */
+export interface BookUnitDetail {
+  key: string; // `gd:${gdId}` or `single:${companyId}`
   name: string;
   isGroup: boolean;
-  rooftops: number; // # owned rooftops in this unit
-  tapped: boolean; // any owned rooftop tapped by the OWNING rep (cumulative)
-  stage: StageGroup; // furthest-along stage among the unit's rooftops
+  stage: StageGroup;
   dealership: DealershipType;
   segment: MarketSegment;
+  tapped: boolean;
+  rooftops: RooftopDetail[]; // tapped first (by calls+emails desc), then untapped (name asc)
 }
 
 /**
@@ -142,6 +163,7 @@ export interface BookCoverage {
   by_dealership: Record<DealershipType, CoverageDim>;
   by_segment: Record<MarketSegment, CoverageDim>;
   by_group_kind: { group: CoverageDim; single: CoverageDim }; // GDs vs Singles
+  units: BookUnitDetail[]; // groups first (rooftop count desc), then singles; name asc tiebreak
   untapped_sample: NamedRef[]; // capped untapped units
   insights: Insight[]; // coverage-specific callouts
 }
