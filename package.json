@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "sync": "tsx scripts/sync.ts",
+    "verify:schema": "tsx --conditions=react-server scripts/verify-sdr-schema.ts",
     "test": "vitest run"
   },
   "dependencies": {
