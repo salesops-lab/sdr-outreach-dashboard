@@ -7,7 +7,7 @@
  * Per-slice counts are logged and a slice nearing the ceiling is warned about.
  */
 
-import { hubspotPost, RATE_LIMIT_DELAY_MS, delay } from "../hubspot/client";
+import { hubspotPost, hubspotGet, RATE_LIMIT_DELAY_MS, delay } from "../hubspot/client";
 import { REP_OWNER_IDS } from "../../config/reps";
 import { ActivityType } from "./types";
 
@@ -45,6 +45,7 @@ const CALL_CONFIG: PullConfig = {
     "hs_call_status",
     "hs_call_duration",
     "hs_object_id",
+    "hs_lastmodifieddate",
   ],
 };
 
@@ -61,6 +62,7 @@ const EMAIL_CONFIG: PullConfig = {
     "hs_email_click_count",
     "hs_email_reply_count",
     "hs_object_id",
+    "hs_lastmodifieddate",
   ],
 };
 
@@ -134,6 +136,7 @@ export interface RawActivity {
   emailOpened: boolean;
   emailReplied: boolean;
   emailClicked: boolean;
+  lastModifiedMs?: number;
 }
 
 const num = (v: string | null | undefined): number => {
@@ -217,6 +220,50 @@ export interface PullCaps {
   emails: boolean;
 }
 
+/**
+ * Map raw HubSpot records (calls and emails mixed) to RawActivity.
+ * A record is a call iff it carries hs_call_direction — the call search filters
+ * on it and CALL_CONFIG requests it, so calls always have it; emails never do.
+ * Drops anything we can't time-bucket or attribute to a tracked owner.
+ */
+function normalizeRecords(records: HsRecord[]): RawActivity[] {
+  const activities: RawActivity[] = [];
+
+  for (const r of records) {
+    const isCall = r.properties.hs_call_direction != null;
+    if (isCall) {
+      activities.push({
+        id: r.id,
+        type: "call",
+        ownerId: r.properties.hubspot_owner_id ?? "",
+        timestampMs: toMs(r.properties.hs_timestamp),
+        disposition: r.properties.hs_call_disposition ?? null,
+        emailStatus: null,
+        emailOpened: false,
+        emailReplied: false,
+        emailClicked: false,
+        lastModifiedMs: toMs(r.properties.hs_lastmodifieddate ?? null) || undefined,
+      });
+    } else {
+      activities.push({
+        id: r.id,
+        type: "email",
+        ownerId: r.properties.hubspot_owner_id ?? "",
+        timestampMs: toMs(r.properties.hs_timestamp),
+        disposition: null,
+        emailStatus: r.properties.hs_email_status ?? null,
+        emailOpened: num(r.properties.hs_email_open_count) > 0,
+        emailReplied: num(r.properties.hs_email_reply_count) > 0,
+        emailClicked: num(r.properties.hs_email_click_count) > 0,
+        lastModifiedMs: toMs(r.properties.hs_lastmodifieddate ?? null) || undefined,
+      });
+    }
+  }
+
+  // Drop anything we can't time-bucket or attribute to a tracked owner.
+  return activities.filter((a) => a.ownerId && Number.isFinite(a.timestampMs) && a.timestampMs > 0);
+}
+
 /** Pull outbound calls + emails (whichever the token can read), normalized. */
 export async function pullActivities(
   windowStartMs: number,
@@ -239,39 +286,110 @@ export async function pullActivities(
     console.warn("Skipping emails — no read access (scope: connected-email-data-access).");
   }
 
-  const activities: RawActivity[] = [];
-
-  for (const c of calls) {
-    activities.push({
-      id: c.id,
-      type: "call",
-      ownerId: c.properties.hubspot_owner_id ?? "",
-      timestampMs: toMs(c.properties.hs_timestamp),
-      disposition: c.properties.hs_call_disposition ?? null,
-      emailStatus: null,
-      emailOpened: false,
-      emailReplied: false,
-      emailClicked: false,
-    });
-  }
-  for (const e of emails) {
-    activities.push({
-      id: e.id,
-      type: "email",
-      ownerId: e.properties.hubspot_owner_id ?? "",
-      timestampMs: toMs(e.properties.hs_timestamp),
-      disposition: null,
-      emailStatus: e.properties.hs_email_status ?? null,
-      emailOpened: num(e.properties.hs_email_open_count) > 0,
-      emailReplied: num(e.properties.hs_email_reply_count) > 0,
-      emailClicked: num(e.properties.hs_email_click_count) > 0,
-    });
-  }
-
-  // Drop anything we can't time-bucket or attribute to a tracked owner.
-  const trackable = activities.filter(
-    (a) => a.ownerId && Number.isFinite(a.timestampMs) && a.timestampMs > 0,
-  );
+  const trackable = normalizeRecords([...calls, ...emails]);
   console.log(`Pulled ${calls.length} calls + ${emails.length} emails = ${trackable.length} usable activities.`);
   return trackable;
+}
+
+/** One page-loop pull of records modified since `sinceMs`, ascending by lastmodified.
+ *  If a 10k window fills, the caller re-calls with the returned `resumeFrom`. */
+async function pullModifiedSlice(cfg: PullConfig, sinceMs: number): Promise<{ records: HsRecord[]; sawCeiling: boolean }> {
+  const collected: HsRecord[] = [];
+  let after: string | undefined;
+  do {
+    const body: Record<string, unknown> = {
+      filterGroups: [{ filters: [
+        { propertyName: "hubspot_owner_id", operator: "IN", values: REP_OWNER_IDS },
+        { propertyName: cfg.directionProperty, operator: "EQ", value: cfg.directionValue },
+        { propertyName: "hs_lastmodifieddate", operator: "GT", value: String(sinceMs) },
+      ] }],
+      sorts: [{ propertyName: "hs_lastmodifieddate", direction: "ASCENDING" }],
+      properties: cfg.properties,
+      limit: 100,
+    };
+    if (after) body.after = after;
+    const res = await hubspotPost<SearchResponse>(`/crm/v3/objects/${cfg.objectType}/search`, body);
+    collected.push(...res.results);
+    after = res.paging?.next?.after;
+    await delay(RATE_LIMIT_DELAY_MS);
+    if (collected.length >= 9800) return { records: collected, sawCeiling: true }; // progressive catch-up
+  } while (after);
+  return { records: collected, sawCeiling: false };
+}
+
+/** Changed outbound activities since watermarks (per type). O(changes). */
+export async function pullChangedActivities(
+  sinceCallsMs: number, sinceEmailsMs: number, caps: PullCaps,
+): Promise<RawActivity[]> {
+  const out: HsRecord[] = [];
+  const seen = new Set<string>();
+  const run = async (cfg: PullConfig, since: number) => {
+    let cursor = since;
+    for (;;) {
+      const { records, sawCeiling } = await pullModifiedSlice(cfg, cursor);
+      for (const r of records) if (!seen.has(r.id)) { seen.add(r.id); out.push(r); }
+      if (!sawCeiling) break;
+      const last = records[records.length - 1];
+      cursor = toMs(last.properties.hs_lastmodifieddate ?? null) || cursor + 1;
+      console.warn(`  [${cfg.objectType}] delta hit 10k window — resuming from ${new Date(cursor).toISOString()}`);
+    }
+  };
+  if (caps.calls) await run(CALL_CONFIG, sinceCallsMs);
+  if (caps.emails) await run(EMAIL_CONFIG, sinceEmailsMs);
+  return normalizeRecords(out);
+}
+
+/** Companies owned by tracked reps changed since `sinceMs` (owner moves INTO book, edits). */
+export async function pullChangedCompanies(sinceMs: number): Promise<(OwnedCompany & { ownerId: string; lastModifiedMs: number })[]> {
+  const out: (OwnedCompany & { ownerId: string; lastModifiedMs: number })[] = [];
+  let after: string | undefined;
+  do {
+    const body: Record<string, unknown> = {
+      filterGroups: [{ filters: [
+        { propertyName: "hubspot_owner_id", operator: "IN", values: REP_OWNER_IDS },
+        { propertyName: "hs_lastmodifieddate", operator: "GT", value: String(sinceMs) },
+      ] }],
+      sorts: [{ propertyName: "hs_lastmodifieddate", direction: "ASCENDING" }],
+      properties: ["name","lifecycle_stage_gd_level","gd_id","is_this_is_a_part_of_group_dealership_",
+        "dealership_group_name","market_segment","type_of_dealership","hubspot_owner_id","hs_lastmodifieddate"],
+      limit: 100,
+    };
+    if (after) body.after = after;
+    const res = await hubspotPost<SearchResponse>(`/crm/v3/objects/companies/search`, body);
+    for (const r of res.results) {
+      out.push({
+        id: r.id, name: r.properties.name?.trim() || `Company ${r.id}`,
+        gdStage: r.properties.lifecycle_stage_gd_level?.trim() || null,
+        gdId: r.properties.gd_id?.trim() || null,
+        isGroup: r.properties.is_this_is_a_part_of_group_dealership_ === "true",
+        groupName: r.properties.dealership_group_name?.trim() || null,
+        segment: r.properties.market_segment?.trim() || null,
+        dealershipType: r.properties.type_of_dealership?.trim() || null,
+        ownerId: r.properties.hubspot_owner_id ?? "",
+        lastModifiedMs: toMs(r.properties.hs_lastmodifieddate ?? null) || 0,
+      });
+    }
+    after = res.paging?.next?.after;
+    await delay(RATE_LIMIT_DELAY_MS);
+  } while (after);
+  return out;
+}
+
+export interface HsOwnerWithTeams {
+  id: string; email: string | null; firstName: string; lastName: string; archived: boolean;
+  teams?: { id: string; name: string; primary?: boolean }[];
+}
+
+/** All owners (+team memberships) — 1-2 GET pages. */
+export async function pullOwnersTeams(): Promise<HsOwnerWithTeams[]> {
+  const out: HsOwnerWithTeams[] = [];
+  let after: string | undefined;
+  do {
+    const path = `/crm/v3/owners?limit=100${after ? `&after=${after}` : ""}`;
+    const res = await hubspotGet<{ results: HsOwnerWithTeams[]; paging?: { next?: { after?: string } } }>(path);
+    out.push(...res.results);
+    after = res.paging?.next?.after;
+    await delay(RATE_LIMIT_DELAY_MS);
+  } while (after);
+  return out;
 }
