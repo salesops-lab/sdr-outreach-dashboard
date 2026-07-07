@@ -291,30 +291,73 @@ export async function pullActivities(
   return trackable;
 }
 
-/** One page-loop pull of records modified since `sinceMs`, ascending by lastmodified.
- *  If a 10k window fills, the caller re-calls with the returned `resumeFrom`. */
-async function pullModifiedSlice(cfg: PullConfig, sinceMs: number): Promise<{ records: HsRecord[]; sawCeiling: boolean }> {
+const DELTA_CEILING = 9800; // cut a modified-window short of the 10k Search cap
+const MAX_RESUME_WINDOWS = 3; // livelock guard: bounded catch-up per run; the watermark still advances, so successive runs drain the backlog
+
+/** One page-loop pull of records modified strictly after `sinceMs`, ascending by
+ *  lastmodified. `sawCeiling` is set only when the window filled AND more pages
+ *  remain — the caller then resumes with a later cursor. */
+async function pullModifiedSlice(
+  objectType: string,
+  extraFilters: object[],
+  properties: string[],
+  sinceMs: number,
+): Promise<{ records: HsRecord[]; sawCeiling: boolean }> {
   const collected: HsRecord[] = [];
   let after: string | undefined;
   do {
     const body: Record<string, unknown> = {
       filterGroups: [{ filters: [
         { propertyName: "hubspot_owner_id", operator: "IN", values: REP_OWNER_IDS },
-        { propertyName: cfg.directionProperty, operator: "EQ", value: cfg.directionValue },
+        ...extraFilters,
         { propertyName: "hs_lastmodifieddate", operator: "GT", value: String(sinceMs) },
       ] }],
       sorts: [{ propertyName: "hs_lastmodifieddate", direction: "ASCENDING" }],
-      properties: cfg.properties,
+      properties,
       limit: 100,
     };
     if (after) body.after = after;
-    const res = await hubspotPost<SearchResponse>(`/crm/v3/objects/${cfg.objectType}/search`, body);
+    const res = await hubspotPost<SearchResponse>(`/crm/v3/objects/${objectType}/search`, body);
     collected.push(...res.results);
     after = res.paging?.next?.after;
     await delay(RATE_LIMIT_DELAY_MS);
-    if (collected.length >= 9800) return { records: collected, sawCeiling: true }; // progressive catch-up
+    if (after && collected.length >= DELTA_CEILING) return { records: collected, sawCeiling: true }; // progressive catch-up
   } while (after);
   return { records: collected, sawCeiling: false };
+}
+
+/** Ceiling-resume loop shared by the delta pulls. Resumes from lastMs − 1
+ *  (GTE-equivalent: the GT filter would otherwise skip records sharing the
+ *  boundary millisecond — callers absorb the re-reads via dedupe) and caps
+ *  catch-up at MAX_RESUME_WINDOWS windows per run so an oversized backlog
+ *  can't outlive the job time limit. */
+async function pullModifiedWithResume(
+  objectType: string,
+  extraFilters: object[],
+  properties: string[],
+  sinceMs: number,
+  onRecord: (r: HsRecord) => void,
+): Promise<void> {
+  let cursor = sinceMs;
+  for (let window = 1; ; window++) {
+    const { records, sawCeiling } = await pullModifiedSlice(objectType, extraFilters, properties, cursor);
+    for (const r of records) onRecord(r);
+    if (!sawCeiling) return;
+    if (window >= MAX_RESUME_WINDOWS) {
+      console.warn(`[delta] ${objectType} backlog remains after ${MAX_RESUME_WINDOWS} catch-up windows — will continue next run`);
+      return;
+    }
+    const lastMs = toMs(records[records.length - 1].properties.hs_lastmodifieddate ?? null);
+    let next = lastMs > 0 ? lastMs - 1 : cursor + 1;
+    if (next <= cursor) {
+      // Only reachable if >DELTA_CEILING records share one millisecond — force
+      // progress past the tie (those tied records may be skipped).
+      console.warn(`  ⚠️  [${objectType}] no cursor progress at ${new Date(cursor).toISOString()} — forcing +1ms`);
+      next = cursor + 1;
+    }
+    cursor = next;
+    console.warn(`  [${objectType}] delta hit 10k window — resuming from ${new Date(cursor).toISOString()}`);
+  }
 }
 
 /** Changed outbound activities since watermarks (per type). O(changes). */
@@ -323,55 +366,39 @@ export async function pullChangedActivities(
 ): Promise<RawActivity[]> {
   const out: HsRecord[] = [];
   const seen = new Set<string>();
-  const run = async (cfg: PullConfig, since: number) => {
-    let cursor = since;
-    for (;;) {
-      const { records, sawCeiling } = await pullModifiedSlice(cfg, cursor);
-      for (const r of records) if (!seen.has(r.id)) { seen.add(r.id); out.push(r); }
-      if (!sawCeiling) break;
-      const last = records[records.length - 1];
-      cursor = toMs(last.properties.hs_lastmodifieddate ?? null) || cursor + 1;
-      console.warn(`  [${cfg.objectType}] delta hit 10k window — resuming from ${new Date(cursor).toISOString()}`);
-    }
-  };
+  const collect = (r: HsRecord) => { if (!seen.has(r.id)) { seen.add(r.id); out.push(r); } };
+  const run = (cfg: PullConfig, since: number) => pullModifiedWithResume(
+    cfg.objectType,
+    [{ propertyName: cfg.directionProperty, operator: "EQ", value: cfg.directionValue }],
+    cfg.properties, since, collect,
+  );
   if (caps.calls) await run(CALL_CONFIG, sinceCallsMs);
   if (caps.emails) await run(EMAIL_CONFIG, sinceEmailsMs);
   return normalizeRecords(out);
 }
 
-/** Companies owned by tracked reps changed since `sinceMs` (owner moves INTO book, edits). */
+const COMPANY_DELTA_PROPERTIES = [
+  "name", "lifecycle_stage_gd_level", "gd_id", "is_this_is_a_part_of_group_dealership_",
+  "dealership_group_name", "market_segment", "type_of_dealership", "hubspot_owner_id", "hs_lastmodifieddate",
+];
+
+/** Companies owned by tracked reps changed since `sinceMs` (owner moves INTO book, edits).
+ *  Boundary re-reads can duplicate records — the store's in-batch last-wins dedupe absorbs them. */
 export async function pullChangedCompanies(sinceMs: number): Promise<(OwnedCompany & { ownerId: string; lastModifiedMs: number })[]> {
   const out: (OwnedCompany & { ownerId: string; lastModifiedMs: number })[] = [];
-  let after: string | undefined;
-  do {
-    const body: Record<string, unknown> = {
-      filterGroups: [{ filters: [
-        { propertyName: "hubspot_owner_id", operator: "IN", values: REP_OWNER_IDS },
-        { propertyName: "hs_lastmodifieddate", operator: "GT", value: String(sinceMs) },
-      ] }],
-      sorts: [{ propertyName: "hs_lastmodifieddate", direction: "ASCENDING" }],
-      properties: ["name","lifecycle_stage_gd_level","gd_id","is_this_is_a_part_of_group_dealership_",
-        "dealership_group_name","market_segment","type_of_dealership","hubspot_owner_id","hs_lastmodifieddate"],
-      limit: 100,
-    };
-    if (after) body.after = after;
-    const res = await hubspotPost<SearchResponse>(`/crm/v3/objects/companies/search`, body);
-    for (const r of res.results) {
-      out.push({
-        id: r.id, name: r.properties.name?.trim() || `Company ${r.id}`,
-        gdStage: r.properties.lifecycle_stage_gd_level?.trim() || null,
-        gdId: r.properties.gd_id?.trim() || null,
-        isGroup: r.properties.is_this_is_a_part_of_group_dealership_ === "true",
-        groupName: r.properties.dealership_group_name?.trim() || null,
-        segment: r.properties.market_segment?.trim() || null,
-        dealershipType: r.properties.type_of_dealership?.trim() || null,
-        ownerId: r.properties.hubspot_owner_id ?? "",
-        lastModifiedMs: toMs(r.properties.hs_lastmodifieddate ?? null) || 0,
-      });
-    }
-    after = res.paging?.next?.after;
-    await delay(RATE_LIMIT_DELAY_MS);
-  } while (after);
+  await pullModifiedWithResume("companies", [], COMPANY_DELTA_PROPERTIES, sinceMs, (r) => {
+    out.push({
+      id: r.id, name: r.properties.name?.trim() || `Company ${r.id}`,
+      gdStage: r.properties.lifecycle_stage_gd_level?.trim() || null,
+      gdId: r.properties.gd_id?.trim() || null,
+      isGroup: r.properties.is_this_is_a_part_of_group_dealership_ === "true",
+      groupName: r.properties.dealership_group_name?.trim() || null,
+      segment: r.properties.market_segment?.trim() || null,
+      dealershipType: r.properties.type_of_dealership?.trim() || null,
+      ownerId: r.properties.hubspot_owner_id ?? "",
+      lastModifiedMs: toMs(r.properties.hs_lastmodifieddate ?? null) || 0,
+    });
+  });
   return out;
 }
 

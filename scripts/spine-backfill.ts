@@ -3,24 +3,11 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 config();
 
-import { runBackfill } from "../lib/spine/runner";
-// Reuse the same preflight semantics as scripts/sync.ts (calls/emails caps).
-import { hubspotGet } from "../lib/hubspot/client";
-
-async function cap(obj: string, prop: string, expect: string) {
-  try {
-    const d = await hubspotGet<{ options?: { value: string }[] }>(`/crm/v3/properties/${obj}/${prop}`);
-    return (d.options ?? []).some((o) => o.value === expect);
-  } catch {
-    return false;
-  }
-}
+import { runBackfill, preflightCaps } from "../lib/spine/runner";
 
 (async () => {
-  const caps = {
-    calls: await cap("calls", "hs_call_direction", "OUTBOUND"),
-    emails: await cap("emails", "hs_email_direction", "EMAIL"),
-  };
+  // 403-only preflight (transient errors rethrow) — same semantics as scripts/sync.ts.
+  const caps = await preflightCaps();
   if (!caps.calls && !caps.emails) throw new Error("token can read neither calls nor emails");
   await runBackfill(caps);
 })().catch((e) => {

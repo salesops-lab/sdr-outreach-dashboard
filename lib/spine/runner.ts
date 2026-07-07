@@ -2,6 +2,7 @@
  *  All runs are idempotent (PK upserts) and watermark-driven (O(changes)). */
 import { makeEtContext, etMidnightUtcMs } from "../sync/buckets";
 import { COVERAGE_ANCHOR } from "../../config/hubspot";
+import { hubspotGet } from "../hubspot/client";
 import { aggregate } from "../sync/aggregate";
 import { resolveAssociations, ContactMeta } from "../sync/associate";
 import {
@@ -22,6 +23,34 @@ function anchorMs(): number {
   return etMidnightUtcMs(y, m, d);
 }
 
+/** Probe read access + direction enum for one object type. Returns false ONLY on a
+ *  403 scope error (cap off, degrade gracefully); any other error — e.g. a transient
+ *  5xx — is a real failure and is rethrown (mirrors scripts/sync.ts checkAccess). */
+async function checkAccess(obj: string, prop: string, expect: string): Promise<boolean> {
+  try {
+    const def = await hubspotGet<{ options?: { value: string }[] }>(`/crm/v3/properties/${obj}/${prop}`);
+    if (!(def.options ?? []).some((o) => o.value === expect)) {
+      console.warn(`  ⚠️  ${obj}.${prop} has no "${expect}" option — filter may return nothing.`);
+    }
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes(" 403 ")) {
+      console.warn(`  ⚠️  No read access to ${obj} (403) — excluding it from this run.`);
+      return false;
+    }
+    throw err;
+  }
+}
+
+/** Which object types the token can read (calls/emails caps). */
+export async function preflightCaps(): Promise<PullCaps> {
+  return {
+    calls: await checkAccess("calls", "hs_call_direction", "OUTBOUND"),
+    emails: await checkAccess("emails", "hs_email_direction", "EMAIL"),
+  };
+}
+
 async function refreshOwnersTeams() {
   const owners = await pullOwnersTeams();
   const teams = new Map<string, string>();
@@ -32,7 +61,7 @@ async function refreshOwnersTeams() {
   }
   await replaceOwnersTeams(
     owners.map((o) => ({ owner_id: o.id, email: o.email?.toLowerCase() ?? null,
-      name: `${o.firstName} ${o.lastName}`.trim() || o.email || o.id, active: !o.archived })),
+      name: [o.firstName, o.lastName].filter(Boolean).join(" ") || o.email || o.id, active: !o.archived })),
     [...teams].map(([team_id, name]) => ({ team_id, name })),
     members,
   );
@@ -62,14 +91,15 @@ async function reaggregate(caps: PullCaps) {
   return snap.totals;
 }
 
-export async function runDelta(caps: PullCaps = { calls: true, emails: true }) {
+export async function runDelta(caps?: PullCaps): Promise<{ ran: boolean }> {
+  caps ??= await preflightCaps();
   const lease = await tryLock(LOCK_TTL_MIN);
-  if (!lease) { console.log("[delta] another run holds the lock — exiting."); return; }
+  if (!lease) { console.log("[delta] another run holds the lock — exiting."); return { ran: false }; }
   const t0 = Date.now();
   try {
     const [wmCalls, wmEmails, wmCompanies] = await Promise.all([
       getWatermark("calls"), getWatermark("emails"), getWatermark("companies")]);
-    if (wmCalls === 0 && wmEmails === 0) throw new Error("Watermarks are zero — run `npm run sync:backfill` first.");
+    if (wmCalls === 0 && wmEmails === 0 && wmCompanies === 0) throw new Error("Watermarks are zero — run `npm run sync:backfill` first.");
 
     const raw = await pullChangedActivities(Math.max(0, wmCalls - OVERLAP_MS), Math.max(0, wmEmails - OVERLAP_MS), caps);
     const changedCompanies = await pullChangedCompanies(Math.max(0, wmCompanies - OVERLAP_MS));
@@ -78,7 +108,7 @@ export async function runDelta(caps: PullCaps = { calls: true, emails: true }) {
     if (raw.length) upserted = await persistResolved(raw);
     if (changedCompanies.length) {
       await upsertCompanies(changedCompanies.map((c) => ({
-        hs_id: c.id, name: c.name, gd_stage: c.gdStage, owner_id: c.ownerId, gd_id: c.gdId,
+        hs_id: c.id, name: c.name, gd_stage: c.gdStage, owner_id: c.ownerId || null, gd_id: c.gdId,
         is_group: c.isGroup, group_name: c.groupName, segment: c.segment,
         dealership_type: c.dealershipType, hs_lastmodified_ms: c.lastModifiedMs,
       })));
@@ -94,6 +124,7 @@ export async function runDelta(caps: PullCaps = { calls: true, emails: true }) {
     await setSyncState("owners", { last_counts: { owners: ownerCount } });
     await setSyncState("lock", { last_duration_ms: Date.now() - t0, last_counts: { activities: upserted, snapshotCalls: totals.calls }, notes: "delta ok" });
     console.log(`[delta] done in ${((Date.now() - t0) / 1000).toFixed(1)}s — ${raw.length} changed activities, ${changedCompanies.length} companies.`);
+    return { ran: true };
   } catch (err) {
     await setSyncState("lock", { notes: `delta FAILED: ${err instanceof Error ? err.message : err}` }).catch(() => {});
     throw err;
@@ -119,8 +150,9 @@ export async function runBackfill(caps: PullCaps) {
     await reconcileOwnedCompanies(rows);
     await refreshOwnersTeams();
     const totals = await reaggregate(caps);
-    // Watermark = now − 1h: the next delta re-reads a safe overlap of the tail.
-    const wm = Date.now() - 3_600_000;
+    // Watermark = run start − overlap: nothing modified after t0 can have been missed
+    // by the pull, and the next delta re-reads the small overlap window on top.
+    const wm = t0 - OVERLAP_MS;
     for (const k of ["calls", "emails", "companies"]) await setSyncState(k, { watermark_ms: wm });
     await setSyncState("lock", { last_duration_ms: Date.now() - t0, notes: "backfill ok" });
     console.log(`[backfill] done in ${((Date.now() - t0) / 60000).toFixed(1)}m — snapshot totals: ${totals.calls} calls / ${totals.emails} emails.`);
@@ -129,7 +161,8 @@ export async function runBackfill(caps: PullCaps) {
   }
 }
 
-export async function runReconcile(caps: PullCaps = { calls: true, emails: true }) {
+export async function runReconcile(caps?: PullCaps) {
+  caps ??= await preflightCaps();
   const lease = await tryLock(60);
   if (!lease) { console.log("[reconcile] locked — exiting."); return; }
   const t0 = Date.now();
@@ -141,7 +174,8 @@ export async function runReconcile(caps: PullCaps = { calls: true, emails: true 
       is_group: c.isGroup, group_name: c.groupName, segment: c.segment, dealership_type: c.dealershipType,
     })));
     const cleared = await reconcileOwnedCompanies(rows);
-    // Re-pull last 7 days of activity in full (drift/deletes safety net).
+    // Re-pull last 7 days of activity in full — refreshes rows that drifted (edited
+    // dispositions/statuses). Rows deleted in HubSpot are NOT removed (known accepted gap).
     const since = Date.now() - 7 * 86_400_000;
     const raw = await pullActivities(since, Date.now(), caps);
     await persistResolved(raw);

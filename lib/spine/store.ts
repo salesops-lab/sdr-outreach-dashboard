@@ -104,7 +104,14 @@ export async function tryLock(ttlMinutes: number): Promise<string | null> {
     .or(`lock_until.is.null,lock_until.lt.${now.toISOString()}`)
     .select("key");
   if (error) throw new Error(`[spine] lock: ${error.message}`);
-  return (data ?? []).length > 0 ? until : null;
+  if ((data ?? []).length > 0) return until;
+  // 0 rows matched: distinguish real contention from a missing seed row, which would
+  // otherwise look like eternal contention on a half-seeded database.
+  const { data: row, error: rowErr } = await sb().from("sdr_sync_state")
+    .select("key").eq("key", "lock").maybeSingle();
+  if (rowErr) throw new Error(`[spine] lock: ${rowErr.message}`);
+  if (!row) throw new Error("[spine] sync_state 'lock' row missing — apply supabase/sdr_schema.sql seeds");
+  return null;
 }
 /** Fenced release: only the current holder (matching lease) clears the lock. Never throws. */
 export async function unlock(lease: string): Promise<void> {
