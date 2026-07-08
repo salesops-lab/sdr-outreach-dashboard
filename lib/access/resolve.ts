@@ -15,17 +15,14 @@ export async function resolveViewer(email: string): Promise<Viewer> {
   try {
     const lower = email.toLowerCase();
     const { data: roleRow } = await sb.from("sdr_roles").select("role,team_id").eq("email", lower).maybeSingle();
-    let teamMembers: string[] = [];
-    if (roleRow?.role === "manager" && roleRow.team_id) {
-      const { data } = await sb.from("sdr_team_members").select("owner_id").eq("team_id", roleRow.team_id);
-      teamMembers = (data ?? []).map((r) => r.owner_id);
-    }
+    // AE pods + manager tree come from config/team-structure (keyed by owner id), so we only need
+    // the login's tracked owner id (player-coach managers + individual SDRs are matched from it).
     let trackedOwnerId: string | null = null;
     if (!roleRow) {
       const { data: owner } = await sb.from("sdr_owners").select("owner_id").eq("email", lower).maybeSingle();
       if (owner && REP_OWNER_IDS.includes(owner.owner_id)) trackedOwnerId = owner.owner_id;
     }
-    return decideScope(email, roleRow ?? null, trackedOwnerId, teamMembers, [...REP_OWNER_IDS]);
+    return decideScope(email, roleRow ?? null, trackedOwnerId, [...REP_OWNER_IDS]);
   } catch (err) {
     console.error("[access] resolveViewer failed:", err);
     return fallback;
