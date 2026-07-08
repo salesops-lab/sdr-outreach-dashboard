@@ -169,7 +169,7 @@ describe("aggregate", () => {
     expect(book.units.map((u) => u.key)).toEqual(["gd:900", "single:X", "single:Z"]);
   });
 
-  it("caps rooftop contacts at top-5 by touches", () => {
+  it("ranks all engaged rooftop contacts by touches (cap raised above 5 for the contacts table)", () => {
     const many: Activity[] = ["P1", "P2", "P3", "P4", "P5", "P6"].flatMap((c, i) =>
       Array.from({ length: i + 1 }, () => act({ type: "call", disposition: BUSY, contactIds: [c], companyIds: ["X"] })),
     );
@@ -178,8 +178,74 @@ describe("aggregate", () => {
       { X: "Acme" }, {}, contactMeta, owned, ctx, NOW, { calls: true, emails: true },
     );
     const roof = snap2.reps[REP].book.units.find((u) => u.key === "single:X")!.rooftops[0];
-    expect(roof.contacts).toHaveLength(5);
     expect(roof.contacts[0].id).toBe("P6"); // 6 touches, most engaged
-    expect(roof.contacts.map((c) => c.id)).not.toContain("P1"); // 1 touch + A/B outweighed — dropped
+    expect(roof.contacts.length).toBeGreaterThan(5); // no longer truncated at 5
+    expect(roof.contacts.map((c) => c.id)).toContain("P1"); // low-touch contacts still listed
+  });
+
+  it("gives each rooftop contact its own recency + temperature", () => {
+    const g1 = book.units[0].rooftops[0]; // G1: one connected call, no contacts
+    const acme = book.units.find((u) => u.key === "single:X")!.rooftops[0];
+    const alice = acme.contacts.find((c) => c.id === "A")!;
+    expect(alice.last_ms).toBe(NOW); // A's latest touch (call + email both at NOW)
+    expect(["call", "email"]).toContain(alice.last_type);
+    expect(alice.temp).toBe("warm"); // A got a connected call → warm
+    expect(g1.contacts).toEqual([]);
+  });
+});
+
+// ── Temperature engine v2: outcome-driven rules + disqualification ──────────────────
+describe("temperature engine v2 (outcome-driven)", () => {
+  const ctx = makeEtContext(NOW);
+  const CALLBACK_HIGH = "af20b15f-39a5-4a40-94e4-63cbe341cf1b";
+  const CALLBACK_LOW = "c7480f13-6eba-48d0-b203-40715b7ffc4d";
+  const REFERRAL = "69252e11-115b-4049-89cd-4952b899a4fc";
+  const NOT_INTERESTED = "09a2d1c9-49ef-4371-8968-0af01bca7893"; // connected but negative
+  const HR = 3_600_000;
+
+  /** Run aggregate over some activities and return today's company_breakdown keyed by id. */
+  function tempOf(activities: Activity[]): Record<string, { temp: string; reason: string; disqualified: boolean }> {
+    const snap = aggregate(activities, {}, {}, {}, {}, ctx, NOW, { calls: true, emails: true });
+    const rows = snap.reps[REP].periods.today.company_breakdown ?? [];
+    return Object.fromEntries(rows.map((r) => [r.id, { temp: r.temp, reason: r.temp_reason, disqualified: r.disqualified }]));
+  }
+
+  it("callback low intent ×2 is hot; ×1 is warm", () => {
+    const r = tempOf([
+      act({ disposition: CALLBACK_LOW, companyIds: ["C1"], timestampMs: NOW - 2 * HR }),
+      act({ disposition: CALLBACK_LOW, companyIds: ["C1"], timestampMs: NOW - HR }),
+      act({ disposition: CALLBACK_LOW, companyIds: ["C2"] }),
+    ]);
+    expect(r.C1.temp).toBe("hot");
+    expect(r.C2.temp).toBe("warm");
+  });
+
+  it("callback high intent is hot; a referral is warm", () => {
+    const r = tempOf([
+      act({ disposition: CALLBACK_HIGH, companyIds: ["C1"] }),
+      act({ disposition: REFERRAL, companyIds: ["C2"] }),
+    ]);
+    expect(r.C1.temp).toBe("hot");
+    expect(r.C2).toMatchObject({ temp: "warm", reason: expect.stringMatching(/referral/i) });
+  });
+
+  it("a connected-but-not-interested account is cold and disqualified", () => {
+    const r = tempOf([act({ disposition: NOT_INTERESTED, companyIds: ["C1"] })]);
+    expect(r.C1).toMatchObject({ temp: "cold", disqualified: true });
+    expect(r.C1.reason).toMatch(/disqualified/i);
+  });
+
+  it("a later positive signal rescues a disqualified account; a later negative re-disqualifies", () => {
+    const rescued = tempOf([
+      act({ disposition: NOT_INTERESTED, companyIds: ["C1"], timestampMs: NOW - 2 * HR }),
+      act({ disposition: MEETING, companyIds: ["C1"], timestampMs: NOW - HR }),
+    ]);
+    expect(rescued.C1).toMatchObject({ temp: "hot", disqualified: false });
+
+    const lost = tempOf([
+      act({ disposition: MEETING, companyIds: ["C2"], timestampMs: NOW - 2 * HR }),
+      act({ disposition: NOT_INTERESTED, companyIds: ["C2"], timestampMs: NOW - HR }),
+    ]);
+    expect(lost.C2).toMatchObject({ temp: "cold", disqualified: true });
   });
 });

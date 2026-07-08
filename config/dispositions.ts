@@ -46,15 +46,38 @@ export const ALL_DISPOSITIONS: Record<string, string> = {
   ...NOT_CONNECTED_DISPOSITIONS,
 };
 
-/** Meeting Scheduled — the strongest positive outcome. */
+/** Individual outcome GUIDs used by the temperature engine. */
 export const MEETING_SCHEDULED_GUID = "243ad062-d38f-40ea-86e2-10040d9ce4bd";
+export const MEETING_RESCHEDULED_GUID = "2aa923e7-3887-4e12-a944-cb7871fe09e3";
+export const CALLBACK_HIGH_GUID = "af20b15f-39a5-4a40-94e4-63cbe341cf1b";
+export const CALLBACK_LOW_GUID = "c7480f13-6eba-48d0-b203-40715b7ffc4d";
+export const GAVE_REFERRAL_GUID = "69252e11-115b-4049-89cd-4952b899a4fc";
 
-/** High-intent outcomes that make an account "hot". */
+/**
+ * High-intent outcomes that make an account "hot" on a single occurrence.
+ * NOTE: "Meeting Reminder" is intentionally EXCLUDED — it's a logistics touch, not buyer
+ * intent (it counts as a neutral connect instead, landing an account "warm").
+ */
 export const HIGH_INTENT_GUIDS = new Set<string>([
-  "243ad062-d38f-40ea-86e2-10040d9ce4bd", // C - Meeting Scheduled
-  "af20b15f-39a5-4a40-94e4-63cbe341cf1b", // C - Callback High Intent
-  "2aa923e7-3887-4e12-a944-cb7871fe09e3", // C - Meeting Rescheduled
-  "f4c8fab8-d5d3-4c90-aab8-4deb4b62cfca", // C - Meeting Reminder
+  MEETING_SCHEDULED_GUID, // C - Meeting Scheduled
+  MEETING_RESCHEDULED_GUID, // C - Meeting Rescheduled
+  CALLBACK_HIGH_GUID, // C - Callback High Intent
+]);
+
+/**
+ * Disqualifying outcomes — a human was reached (or the account is a dead end) and the signal
+ * is NEGATIVE. These pull an account to COLD (flagged "disqualified"), unless a more recent
+ * positive signal revives it. Mixes connected rejections (Not Interested / Not a Right POC /
+ * Language Barrier) with data-quality dead ends (bad/wrong number, left org, wrong account).
+ */
+export const NEGATIVE_GUIDS = new Set<string>([
+  "09a2d1c9-49ef-4371-8968-0af01bca7893", // C - Not Interested
+  "3fcb6e84-4d51-45e4-8907-4c8cfa8c3818", // C - Not a Right POC
+  "196a54fe-96e2-4323-9af4-3f5cc1d9483b", // C - Language Barrier
+  "f642a1f6-bb8a-4320-9bd5-49652079c6d2", // NC - Prospect Left Organisation
+  "47339f4e-b036-4bf5-aa35-e573b7ed8b0b", // NC - Bad Number
+  "6272bc41-a712-4a53-87dc-a75ebd401268", // NC - Wrong Number
+  "676f88b6-8b37-487f-98e6-583ee3124b97", // NC - Incorrect/Irrelevant Account
 ]);
 
 /** True if a human was reached (disposition is in the connected set). */
@@ -69,6 +92,27 @@ export function isHighIntent(guid: string | null | undefined): boolean {
 
 export function isMeeting(guid: string | null | undefined): boolean {
   return guid === MEETING_SCHEDULED_GUID;
+}
+
+export function isMeetingRescheduled(guid: string | null | undefined): boolean {
+  return guid === MEETING_RESCHEDULED_GUID;
+}
+
+export function isCallbackHigh(guid: string | null | undefined): boolean {
+  return guid === CALLBACK_HIGH_GUID;
+}
+
+export function isCallbackLow(guid: string | null | undefined): boolean {
+  return guid === CALLBACK_LOW_GUID;
+}
+
+export function isGaveReferral(guid: string | null | undefined): boolean {
+  return guid === GAVE_REFERRAL_GUID;
+}
+
+/** A disqualifying outcome (buyer rejection or dead-end contact data). */
+export function isNegative(guid: string | null | undefined): boolean {
+  return !!guid && NEGATIVE_GUIDS.has(guid);
 }
 
 /** Human label for a disposition GUID (or a readable "Unknown" fallback). */

@@ -10,7 +10,10 @@
  */
 
 import { REPS, REP_OWNER_IDS } from "../../config/reps";
-import { isConnected, isHighIntent, isMeeting, dispositionLabel } from "../../config/dispositions";
+import {
+  isConnected, isMeeting, isMeetingRescheduled, isCallbackHigh, isCallbackLow, isGaveReferral, isNegative, dispositionLabel,
+} from "../../config/dispositions";
+import { classifyTemperature, TempSignals } from "./temperature";
 import {
   EtContext, periodsForActivity, etParts, etDateStr, etMidnightUtcMs, dayIndexToYmd, PORTAL_TZ,
 } from "./buckets";
@@ -40,11 +43,11 @@ import {
   Snapshot,
   STAGE_GROUPS,
   StageGroup,
-  Temperature,
 } from "./types";
 
 const DAY_MS = 86_400_000;
 const UNTAPPED_SAMPLE_CAP = 200;
+const ROOFTOP_CONTACT_CAP = 50; // engaged contacts kept per rooftop for the L3 contacts table
 
 /**
  * Map a raw `lifecycle_stage_gd_level` value to a StageGroup bucket (case-insensitive).
@@ -61,18 +64,83 @@ function normalizeGdStage(raw: string | null | undefined): StageGroup {
   }
 }
 
-/** The engagement fields the temperature rules read — CompanyStat and RoofAcc both satisfy it. */
-interface TouchStat {
+/**
+ * Per-entity engagement/outcome signals — the raw input to the temperature engine. One shape
+ * accumulates for a company (period-scoped), an owned rooftop (cumulative), and a single
+ * contact, so the same `classify()` runs at every level.
+ */
+interface SigAcc {
   calls: number;
   emails: number;
   connected: number;
-  meeting: boolean;
-  highIntent: boolean;
   opened: number;
   replied: number;
+  meetingScheduled: number;
+  meetingRescheduled: number;
+  callbackHigh: number;
+  callbackLow: number;
+  gaveReferral: number;
+  negative: number;
+  lastMs: number; // most recent touch (epoch ms)
+  lastType: "call" | "email" | null; // channel of that most recent touch
+  lastPositiveMs: number | null; // most recent positive/soft/reply signal
+  lastNegativeMs: number | null; // most recent disqualifying outcome
+  negativeLabel: string | null; // label of the most recent negative (for the reason)
 }
 
-interface CompanyStat extends TouchStat {
+function newSig(): SigAcc {
+  return {
+    calls: 0, emails: 0, connected: 0, opened: 0, replied: 0,
+    meetingScheduled: 0, meetingRescheduled: 0, callbackHigh: 0, callbackLow: 0, gaveReferral: 0, negative: 0,
+    lastMs: 0, lastType: null, lastPositiveMs: null, lastNegativeMs: null, negativeLabel: null,
+  };
+}
+
+const laterMs = (cur: number | null, ts: number): number => (cur == null ? ts : Math.max(cur, ts));
+
+/** Fold one activity into a signal accumulator — the ONE place outcome business-rules live. */
+function recordSig(s: SigAcc, a: Activity): void {
+  if (a.timestampMs >= s.lastMs) s.lastType = a.type;
+  s.lastMs = Math.max(s.lastMs, a.timestampMs);
+  if (a.type === "call") {
+    s.calls++;
+    const g = a.disposition;
+    if (isConnected(g)) s.connected++;
+    if (isMeeting(g)) s.meetingScheduled++;
+    if (isMeetingRescheduled(g)) s.meetingRescheduled++;
+    if (isCallbackHigh(g)) s.callbackHigh++;
+    if (isCallbackLow(g)) s.callbackLow++;
+    if (isGaveReferral(g)) s.gaveReferral++;
+    if (isNegative(g)) { s.negative++; s.lastNegativeMs = laterMs(s.lastNegativeMs, a.timestampMs); s.negativeLabel = dispositionLabel(g); }
+    if (isMeeting(g) || isMeetingRescheduled(g) || isCallbackHigh(g) || isCallbackLow(g) || isGaveReferral(g)) {
+      s.lastPositiveMs = laterMs(s.lastPositiveMs, a.timestampMs);
+    }
+  } else {
+    s.emails++;
+    if (a.emailOpened) s.opened++;
+    if (a.emailReplied) { s.replied++; s.lastPositiveMs = laterMs(s.lastPositiveMs, a.timestampMs); }
+  }
+}
+
+/** Project a signal accumulator onto the temperature engine's input. */
+function toSignals(s: SigAcc, tapped?: boolean): TempSignals {
+  return {
+    meetingScheduled: s.meetingScheduled, meetingRescheduled: s.meetingRescheduled,
+    callbackHigh: s.callbackHigh, callbackLow: s.callbackLow, gaveReferral: s.gaveReferral,
+    connected: s.connected, negative: s.negative, opened: s.opened, replied: s.replied,
+    calls: s.calls, emails: s.emails,
+    lastPositiveMs: s.lastPositiveMs, lastNegativeMs: s.lastNegativeMs, negativeLabel: s.negativeLabel,
+    tapped,
+  };
+}
+
+const classify = (s: SigAcc, tapped?: boolean) => classifyTemperature(toSignals(s, tapped));
+const highIntentCount = (s: SigAcc) => s.meetingScheduled + s.meetingRescheduled + s.callbackHigh;
+
+/** Per-contact accumulator: same signals, used to give each contact its own temperature. */
+type ContactAcc = SigAcc;
+
+interface CompanyStat extends SigAcc {
   contacts: Set<string>;
 }
 
@@ -105,34 +173,12 @@ function newAcc(): Acc {
 }
 
 /** Cumulative, owner-scoped engagement on one OWNED rooftop (feeds the Book Explorer). */
-interface RoofAcc {
-  calls: number;
-  emails: number;
-  connected: number;
-  lastMs: number;
-  meeting: boolean;
-  highIntent: boolean;
-  opened: number;
-  replied: number;
-  contacts: Map<string, { calls: number; emails: number }>;
+interface RoofAcc extends SigAcc {
+  contacts: Map<string, ContactAcc>;
 }
 
 function newRoofAcc(): RoofAcc {
-  return { calls: 0, emails: 0, connected: 0, lastMs: 0, meeting: false, highIntent: false, opened: 0, replied: 0, contacts: new Map() };
-}
-
-/** Shared per-activity company-touch bookkeeping (business rules live in ONE place). */
-function recordTouch(s: TouchStat, a: Activity): void {
-  if (a.type === "call") {
-    s.calls++;
-    if (a.disposition && isConnected(a.disposition)) s.connected++;
-    if (isMeeting(a.disposition)) s.meeting = true;
-    if (isHighIntent(a.disposition)) s.highIntent = true;
-  } else {
-    s.emails++;
-    if (a.emailOpened) s.opened++;
-    if (a.emailReplied) s.replied++;
-  }
+  return { ...newSig(), contacts: new Map() };
 }
 
 function applyActivity(acc: Acc, a: Activity): void {
@@ -160,9 +206,9 @@ function applyActivity(acc: Acc, a: Activity): void {
   }
 
   for (const co of a.companyIds) {
-    const s = acc.companyStat.get(co) ?? { contacts: new Set<string>(), calls: 0, emails: 0, connected: 0, meeting: false, highIntent: false, opened: 0, replied: 0 };
+    const s = acc.companyStat.get(co) ?? { ...newSig(), contacts: new Set<string>() };
     a.contactIds.forEach((c) => s.contacts.add(c));
-    recordTouch(s, a);
+    recordSig(s, a);
     acc.companyStat.set(co, s);
   }
 
@@ -171,25 +217,6 @@ function applyActivity(acc: Acc, a: Activity): void {
 
 const round = (n: number, dp = 2) => Math.round(n * 10 ** dp) / 10 ** dp;
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
-
-function temperatureOf(s: TouchStat): Temperature {
-  if (s.meeting || s.highIntent || s.replied > 0) return "hot";
-  if (s.connected > 0 || s.opened > 0 || s.calls + s.emails >= 3) return "warm";
-  return "cold";
-}
-
-function temperatureReason(s: TouchStat): string {
-  const touches = s.calls + s.emails;
-  if (s.meeting) return "Meeting booked";
-  if (s.highIntent) return "High-intent callback";
-  if (s.replied > 0) return `Replied to email`;
-  if (s.connected > 0) return `Connected ${s.connected}×${s.opened > 0 ? `, opened ${s.opened}` : ""}`;
-  if (s.opened > 0) return `Opened email${s.opened > 1 ? ` ${s.opened}×` : ""}, no call connect`;
-  if (touches >= 3) return `${touches} touches, no engagement`;
-  if (s.calls > 0) return `${s.calls} call${s.calls > 1 ? "s" : ""}, no connect`;
-  if (s.emails > 0) return `Emailed, no open/reply`;
-  return "Touched";
-}
 
 function reachOf(entries: { call: boolean; email: boolean }[]): ReachByChannel {
   let callOnly = 0, emailOnly = 0, both = 0;
@@ -277,7 +304,7 @@ function finalize(
   for (const s of acc.companyStat.values()) {
     if (s.contacts.size > 0) { companiesWithContact++; contactsInCompanies += s.contacts.size; }
     if (s.calls + s.emails >= 2) multitouchAccounts++;
-    temp[temperatureOf(s)]++;
+    temp[classify(s).temp]++;
   }
   const companiesTapped = acc.companyStat.size;
   const depth = companiesWithContact ? contactsInCompanies / companiesWithContact : 0;
@@ -321,23 +348,32 @@ function finalize(
 
   if (NARROW_PERIODS.includes(period)) {
     metrics.company_breakdown = [...acc.companyStat.entries()]
-      .map(([id, s]) => ({
-        id,
-        name: companyNames[id] ?? `Company ${id}`,
-        contacts: s.contacts.size,
-        calls: s.calls,
-        emails: s.emails,
-        temp: temperatureOf(s),
-        temp_reason: temperatureReason(s),
-        stage: normalizeGdStage(companyGdStage[id]),
-        opened: s.opened,
-        replied: s.replied,
-        owned: ownedSet.has(id),
-        contacts_list: [...s.contacts].map((cid) => {
-          const meta = contactMeta[cid];
-          return { id: cid, name: meta?.name ?? `Contact ${cid}`, title: meta?.title ?? undefined, dm: meta?.dm };
-        }),
-      }))
+      .map(([id, s]) => {
+        const t = classify(s);
+        return {
+          id,
+          name: companyNames[id] ?? `Company ${id}`,
+          contacts: s.contacts.size,
+          calls: s.calls,
+          emails: s.emails,
+          connected: s.connected,
+          meetings: s.meetingScheduled,
+          high_intent: highIntentCount(s),
+          negative: s.negative,
+          disqualified: t.disqualified,
+          temp: t.temp,
+          temp_reason: t.reason,
+          stage: normalizeGdStage(companyGdStage[id]),
+          opened: s.opened,
+          replied: s.replied,
+          last_ms: s.lastMs || null,
+          owned: ownedSet.has(id),
+          contacts_list: [...s.contacts].map((cid) => {
+            const meta = contactMeta[cid];
+            return { id: cid, name: meta?.name ?? `Contact ${cid}`, title: meta?.title ?? undefined, dm: meta?.dm };
+          }),
+        };
+      })
       .sort((a, b) => b.calls + b.emails - (a.calls + a.emails));
   }
 
@@ -390,15 +426,20 @@ function bookInsights(b: BookCoverage): Insight[] {
   return out;
 }
 
-/** Build the top-5 engaged-contact list for one rooftop's accumulator. */
+/** Build the engaged-contact list for one rooftop — each contact carries its own temperature. */
 function rooftopContacts(stat: RoofAcc, contactMeta: Record<string, ContactMeta>): RooftopContact[] {
   return [...stat.contacts.entries()]
     .map(([id, c]) => {
       const meta = contactMeta[id];
-      return { id, name: meta?.name ?? `Contact ${id}`, title: meta?.title ?? undefined, dm: meta?.dm, calls: c.calls, emails: c.emails };
+      return {
+        id, name: meta?.name ?? `Contact ${id}`, title: meta?.title ?? undefined, dm: meta?.dm,
+        calls: c.calls, emails: c.emails,
+        last_ms: c.lastMs, last_type: c.lastType ?? "call",
+        temp: classify(c).temp,
+      };
     })
     .sort((a, b) => (b.calls + b.emails) - (a.calls + a.emails))
-    .slice(0, 5);
+    .slice(0, ROOFTOP_CONTACT_CAP);
 }
 
 /**
@@ -454,15 +495,17 @@ function computeBookCoverage(
 
     const rooftops: RooftopDetail[] = u.rooftops.map((r) => {
       const rTapped = everTapped.has(r.id);
-      const stat = roofStats.get(r.id) ?? newRoofAcc(); // RoofAcc satisfies TouchStat directly
-      const untapped = !rTapped;
+      const stat = roofStats.get(r.id) ?? newRoofAcc();
+      const t = classify(stat, rTapped); // handles the untapped case → cold / "Untouched"
 
       return {
         id: r.id, name: r.name, tapped: rTapped,
         calls: stat.calls, emails: stat.emails, connected: stat.connected,
+        opened: stat.opened, replied: stat.replied,
+        meetings: stat.meetingScheduled, high_intent: highIntentCount(stat),
+        negative: stat.negative, disqualified: t.disqualified,
         last_ms: stat.lastMs || null,
-        temp: untapped ? "cold" : temperatureOf(stat),
-        temp_reason: untapped ? "Untouched" : temperatureReason(stat),
+        temp: t.temp, temp_reason: t.reason,
         contacts: rooftopContacts(stat, contactMeta),
       };
     });
@@ -535,11 +578,10 @@ export function aggregate(
       tappedSet.add(co);
 
       const racc = roofMap.get(co) ?? newRoofAcc();
-      recordTouch(racc, a);
-      racc.lastMs = Math.max(racc.lastMs, a.timestampMs);
+      recordSig(racc, a);
       for (const cid of a.contactIds) {
-        const ct = racc.contacts.get(cid) ?? { calls: 0, emails: 0 };
-        if (a.type === "call") ct.calls++; else ct.emails++;
+        const ct = racc.contacts.get(cid) ?? newSig();
+        recordSig(ct, a);
         racc.contacts.set(cid, ct);
       }
       roofMap.set(co, racc);

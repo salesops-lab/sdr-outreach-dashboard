@@ -110,7 +110,7 @@ export const MARKET_SEGMENT_LABELS: Record<MarketSegment, string> = {
 
 export type DealershipType = "Franchise" | "Independent" | "Unknown";
 
-/** One engaged contact on a rooftop (top-5 by touches). */
+/** One engaged contact on a rooftop, with its own activity recency + temperature. */
 export interface RooftopContact {
   id: string;
   name: string;
@@ -118,6 +118,9 @@ export interface RooftopContact {
   dm?: boolean;
   calls: number;
   emails: number;
+  last_ms: number; // epoch ms of this contact's most recent touch
+  last_type: "call" | "email"; // channel of that most recent touch
+  temp: Temperature; // per-contact temperature (same engine as the account)
 }
 
 /** One owned rooftop inside a book unit — cumulative, owner-scoped engagement. */
@@ -128,10 +131,16 @@ export interface RooftopDetail {
   calls: number; // outbound calls by the OWNING rep (anchor window)
   emails: number;
   connected: number; // calls that reached a human
+  opened: number; // emails opened
+  replied: number; // emails replied
+  meetings: number; // meeting-scheduled outcomes
+  high_intent: number; // high-intent outcomes (meeting/reschedule/callback-high)
+  negative: number; // disqualifying outcomes
+  disqualified: boolean; // latest signal is a live rejection
   last_ms: number | null; // epoch ms of the rep's latest touch; null if untapped
   temp: Temperature; // cumulative temperature ("cold" + reason "Untouched" when untapped)
   temp_reason: string;
-  contacts: RooftopContact[]; // top 5 engaged contacts by touches (calls+emails desc)
+  contacts: RooftopContact[]; // engaged contacts, most-engaged first
 }
 
 /** A GD/Single unit with rooftop drill-down — the Book Explorer's data. */
@@ -211,11 +220,17 @@ export interface CompanyBreakdownRow {
   contacts: number;
   calls: number;
   emails: number;
+  connected: number; // calls that reached a human
+  meetings: number; // meeting-scheduled outcomes
+  high_intent: number; // high-intent outcomes
+  negative: number; // disqualifying outcomes
+  disqualified: boolean; // latest signal is a live rejection
   temp: Temperature;
   temp_reason: string; // why this tier
   stage?: string; // lifecycle group label
   opened: number; // emails opened
   replied: number; // emails replied
+  last_ms: number | null; // epoch ms of the account's most recent touch this period
   owned: boolean; // is this company in the rep's owned book?
   contacts_list?: ContactRef[]; // who, with HubSpot record links (narrow periods)
 }
