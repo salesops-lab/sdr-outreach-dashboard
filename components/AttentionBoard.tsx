@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, Fragment } from "react";
 import { Flame, ExternalLink, ArrowRight, Sparkles, ChevronDown, ChevronUp, Copy, Check, Mail, Phone, User, Star } from "lucide-react";
 import { AgentWatch, Priority, WatchStatus } from "../lib/agent/types";
 import { REPS } from "../config/reps";
@@ -161,7 +161,7 @@ export default function AttentionBoard({ watches }: { watches: AgentWatch[] }) {
                 const hasHelper = details && details.helperText;
 
                 return (
-                  <optgroup key={w.accountId} label={w.accountName || w.accountId} className="m-0 p-0 border-none font-normal [content-visibility:auto]">
+                  <Fragment key={w.accountId}>
                     <tr className={cn(
                       "hover:bg-surface-muted/30 transition-colors cursor-pointer align-top",
                       isExpanded && "bg-primary-weak/10 hover:bg-primary-weak/20"
@@ -336,7 +336,7 @@ export default function AttentionBoard({ watches }: { watches: AgentWatch[] }) {
                         </td>
                       </tr>
                     )}
-                  </optgroup>
+                  </Fragment>
                 );
               })}
             </tbody>
