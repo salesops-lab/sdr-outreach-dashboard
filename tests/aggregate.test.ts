@@ -249,3 +249,24 @@ describe("temperature engine v2 (outcome-driven)", () => {
     expect(lost.C2).toMatchObject({ temp: "cold", disqualified: true });
   });
 });
+
+// ── Owner != activity-doer: a teammate's work still taps the OWNER's book ────────────
+describe("owner != activity-doer coverage", () => {
+  const ctx = makeEtContext(NOW);
+  const OWNER = "69016314"; // Rajveer Singh (owns the account)
+  const TEAMMATE = "66975998"; // Sanamdeep — a different tracked rep does the work
+
+  it("counts a teammate's activity on an owned account as tapped in the OWNER's book", () => {
+    const owned = { [OWNER]: [own({ id: "W", name: "Westside Auto", gdStage: "Prospect", segment: "mm_single" })] };
+    const snap = aggregate(
+      [act({ ownerId: TEAMMATE, type: "call", disposition: CONNECTED, contactIds: ["Z"], companyIds: ["W"] })],
+      { W: "Westside Auto" }, {}, { Z: { name: "Zed", title: "GM", dm: true } }, owned, ctx, NOW, { calls: true, emails: true },
+    );
+    const book = snap.reps[OWNER].book;
+    expect(book.units_tapped).toBe(1); // owner's book shows it worked
+    const w = book.units.find((u) => u.key === "single:W")!;
+    expect(w.tapped).toBe(true);
+    expect(w.rooftops[0]).toMatchObject({ tapped: true, calls: 1, connected: 1 });
+    expect(snap.reps[TEAMMATE].book.units_total).toBe(0); // teammate owns nothing here
+  });
+});

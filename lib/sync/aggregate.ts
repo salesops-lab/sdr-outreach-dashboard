@@ -564,22 +564,40 @@ export function aggregate(
     bookStat.set(ownerId, new Map());
   }
 
+  // Reverse map: owned company -> its owning rep. Used so an account counts as "tapped" (and
+  // its engagement rolls up to the OWNER's book) whenever ANY tracked rep works it — not only
+  // when the owner does it themselves. Fixes owner≠activity-doer accounts reading as untouched.
+  const companyOwner = new Map<string, string>();
+  for (const ownerId of REP_OWNER_IDS) {
+    for (const c of ownedCompanies[ownerId] ?? []) companyOwner.set(c.id, ownerId);
+  }
+
   // totals reflect the short (display) window; everTapped uses the full anchored set.
   let totalCalls = 0, totalEmails = 0;
   for (const a of activities) {
+    // Per-rep outbound metrics + daily trend are per ACTIVITY-DOER (the rep's own outreach).
     const byPeriod = accs.get(a.ownerId);
-    if (!byPeriod) continue;
+    if (byPeriod) {
+      for (const period of periodsForActivity(a.timestampMs, ctx)) applyActivity(byPeriod.get(period)!, a);
 
-    for (const period of periodsForActivity(a.timestampMs, ctx)) applyActivity(byPeriod.get(period)!, a);
+      if (etParts(a.timestampMs).dayIndex >= ctx.dailyStartIndex) {
+        if (a.type === "call") totalCalls++; else totalEmails++;
+        const day = etDateStr(a.timestampMs);
+        const dmap = dailyAcc.get(a.ownerId)!;
+        const d = dmap.get(day) ?? { calls: 0, connected: 0, emails: 0 };
+        if (a.type === "call") { d.calls++; if (a.disposition && isConnected(a.disposition)) d.connected++; }
+        else d.emails++;
+        dmap.set(day, d);
+      }
+    }
 
-    // Cumulative, owner-scoped tapped set (a company counts only if its owner acted on it).
-    const owned = ownedSets.get(a.ownerId)!;
-    const tappedSet = everTapped.get(a.ownerId)!;
-    const roofMap = bookStat.get(a.ownerId)!;
+    // Cumulative owned-book coverage is attributed to the account's OWNER, whoever did the work —
+    // so a teammate working an owner's account still taps the owner's book (owner≠doer fix).
     for (const co of a.companyIds) {
-      if (!owned.has(co)) continue;
-      tappedSet.add(co);
-
+      const owner = companyOwner.get(co);
+      if (!owner) continue; // not an owned/tracked account
+      everTapped.get(owner)!.add(co);
+      const roofMap = bookStat.get(owner)!;
       const racc = roofMap.get(co) ?? newRoofAcc();
       recordSig(racc, a);
       for (const cid of a.contactIds) {
@@ -588,17 +606,6 @@ export function aggregate(
         racc.contacts.set(cid, ct);
       }
       roofMap.set(co, racc);
-    }
-
-    // Daily trend + display totals: only within the short window.
-    if (etParts(a.timestampMs).dayIndex >= ctx.dailyStartIndex) {
-      if (a.type === "call") totalCalls++; else totalEmails++;
-      const day = etDateStr(a.timestampMs);
-      const dmap = dailyAcc.get(a.ownerId)!;
-      const d = dmap.get(day) ?? { calls: 0, connected: 0, emails: 0 };
-      if (a.type === "call") { d.calls++; if (a.disposition && isConnected(a.disposition)) d.connected++; }
-      else d.emails++;
-      dmap.set(day, d);
     }
   }
 
