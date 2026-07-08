@@ -42,7 +42,8 @@ describe("decideScope", () => {
 
   it("a TL sees only their own sub-team, not the whole org", () => {
     const v = decideScope("shikhar@spyne.ai", null, SHIKHAR, ALL);
-    expect(v.defaultOwnerIds).toContain("164380450"); // Shubham, under Shikhar
+    expect(v.defaultOwnerIds).toContain("164014269"); // Palak, on Shikhar's team
+    expect(v.defaultOwnerIds).not.toContain("164380450"); // Shubham reports to TL Kshitij, not Shikhar
     expect(v.defaultOwnerIds).not.toContain("160353848"); // Utsav reports to Vaibhav directly
   });
 

@@ -6,11 +6,10 @@
  * Keyed by HubSpot owner id (from config/reps.ts). This drives DEFAULT scope only — everyone
  * keeps the org-wide "All reps" toggle (focus model, not confidentiality).
  *
- * GAPS (default to org-wide viewer until confirmed): the Vaibhav pod is cut off in the sheet, so
- * Ketan Srivastava (68537320), Divyansh Gupta (164845034), Rishabh Sharma (71105578), and
- * Abhishek Bhattacharyya (71105580) are unplaced. Sourav Singh (165867085) + Animesh Anand
- * (165725776) are mapped below but are NOT yet in config/reps.ts, so they aren't tracked/shown
- * until added there. "central" is a shared pool with no single AE login.
+ * GAPS (default to org-wide viewer until placed): Ketan Srivastava (68537320), Divyansh Gupta
+ * (164845034), Rishabh Sharma (71105578), and Abhishek Bhattacharyya (71105580) are in
+ * config/reps.ts but not in any pod the org sheet lists. "central" is a shared pool (no single
+ * AE login). Sourav Singh + Animesh Anand are now tracked (added to config/reps.ts).
  */
 
 export const AE_PODS = ["saarthak", "neelima", "archit", "prince", "central"] as const;
@@ -51,7 +50,7 @@ export const SDR_TEAM: Record<string, { pod: AePod; manager: string }> = {
   "66975998": { pod: "archit", manager: "rajveer" }, // Sanamdeep .
   // Vaibhav's org (Shikhar + Kshitij are TLs under Vaibhav)
   "160353848": { pod: "neelima", manager: "vaibhav" }, // Utsav Yadav
-  "164380450": { pod: "neelima", manager: "shikhar" }, // Shubham Singha
+  "164380450": { pod: "neelima", manager: "kshitij" }, // Shubham Singha (TL Kshitij's team)
   "81615528": { pod: "archit", manager: "vaibhav" }, // Jayant Trivedi
   "164014269": { pod: "central", manager: "shikhar" }, // Palak Narula
   "159865948": { pod: "saarthak", manager: "kshitij" }, // Ashish Baweja
@@ -61,8 +60,8 @@ export const SDR_TEAM: Record<string, { pod: AePod; manager: string }> = {
   "79785093": { pod: "neelima", manager: "vaibhav" }, // Shikhar Paroha (TL, player-coach)
   "79900347": { pod: "prince", manager: "shikhar" }, // Shadman Khalid
   "79528942": { pod: "central", manager: "vaibhav" }, // Khubaib Akram Khan
-  "165867085": { pod: "central", manager: "kshitij" }, // Sourav Singh (pending reps.ts add)
-  "165725776": { pod: "central", manager: "shikhar" }, // Animesh Anand (pending reps.ts add)
+  "165867085": { pod: "central", manager: "kshitij" }, // Sourav Singh (TL Kshitij's team)
+  "165725776": { pod: "central", manager: "shikhar" }, // Animesh Anand (TL Shikhar's team)
 };
 
 /** Which manager (if any) this owner id IS (player-coach lookup). */

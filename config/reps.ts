@@ -1,5 +1,5 @@
 /**
- * The 28 SDRs this dashboard tracks: HubSpot owner ID -> display name.
+ * The 30 SDRs this dashboard tracks: HubSpot owner ID -> display name.
  *
  * Resolved against HubSpot portal 242626590 (app-na2.hubspot.com) and
  * cross-checked against the existing call-scoring-agent sdr_map.ts.
@@ -34,6 +34,8 @@ export const REPS: Record<string, string> = {
   "71105580": "Abhishek Bhattacharyya",
   "76546199": "Nam Harrison",
   "165126708": "Lakshya Gaurh",
+  "165867085": "Sourav Singh",
+  "165725776": "Animesh Anand",
 };
 
 /** Owner IDs as an array — used as the `IN` filter for HubSpot searches. */
