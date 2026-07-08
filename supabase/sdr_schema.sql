@@ -93,8 +93,55 @@ create table if not exists sdr_snapshots (
   generated_at timestamptz not null default now()
 );
 
+-- ── Hot-account AI agent (Phase 4) ──────────────────────────────────────────
+-- Raw activity CONTENT (call notes/transcript/summary, email subject), pulled by the opt-in
+-- content-backfill and read by the agent for reasoning. Kept OUT of sdr_activities so the
+-- aggregation hot-path stays lean. hs_id matches sdr_activities.hs_id.
+create table if not exists sdr_activity_content (
+  hs_id         text primary key,
+  type          text,
+  call_title    text,
+  call_body     text,   -- hs_call_body (Nooks notes)
+  call_summary  text,   -- hs_call_summary (AI summary of the transcript)
+  transcript    text,   -- nooks_transcript / transcript
+  email_subject text,
+  updated_at    timestamptz not null default now()
+);
+
+-- One watch per hot account. The agent maintains status until a meeting is booked or the
+-- account drops off; reason/next_step/priority are the SDR-facing task fields.
+create table if not exists sdr_agent_watches (
+  account_id       text primary key,   -- rooftop company id
+  account_name     text,
+  rep_id           text,               -- owning rep
+  status           text not null default 'watching' check (status in ('watching','meeting_booked','drop_off','closed')),
+  temp             text,
+  reason           text,               -- why it's hot (agent)
+  next_step        text,               -- recommended next action (agent)
+  priority         text check (priority in ('high','medium','low')),
+  confidence       real,
+  entered_hot_at   timestamptz,
+  last_signal_ms   bigint,             -- recency of the account's latest activity
+  last_reviewed_at timestamptz,
+  model            text,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+create index if not exists idx_sdr_watch_rep on sdr_agent_watches(rep_id);
+create index if not exists idx_sdr_watch_status on sdr_agent_watches(status);
+
+-- Append-only reasoning log (audit trail of what the agent said and when).
+create table if not exists sdr_agent_notes (
+  id         bigint generated always as identity primary key,
+  account_id text not null,
+  kind       text,   -- 'reason' | 'next_step' | 'status_change' | 'system'
+  note       text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_sdr_note_account on sdr_agent_notes(account_id, created_at);
+
 -- Seeds (idempotent)
-insert into sdr_sync_state(key) values ('calls'),('emails'),('companies'),('owners'),('lock')
+insert into sdr_sync_state(key) values ('calls'),('emails'),('companies'),('owners'),('lock'),('agent')
   on conflict (key) do nothing;
 
 insert into sdr_roles(email, role, team_id) values
@@ -112,7 +159,8 @@ do $$
 declare t text;
 begin
   foreach t in array array['sdr_activities','sdr_companies','sdr_contacts','sdr_owners',
-                           'sdr_teams','sdr_team_members','sdr_roles','sdr_sync_state','sdr_snapshots']
+                           'sdr_teams','sdr_team_members','sdr_roles','sdr_sync_state','sdr_snapshots',
+                           'sdr_activity_content','sdr_agent_watches','sdr_agent_notes']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists %I on %I', t || '_spyne_select', t);

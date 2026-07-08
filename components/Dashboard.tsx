@@ -117,6 +117,7 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
         <div className="flex flex-col items-end gap-1.5 text-right text-xs text-ink-muted">
           <div className="flex items-center gap-2">
             <Chip tone="primary" className="uppercase tracking-wide"><ShieldCheck className="h-3 w-3" />{viewer.role}</Chip>
+            <a href="/attention" className="inline-flex items-center gap-1 font-semibold text-hot hover:underline"><Flame className="h-3 w-3" />Attention</a>
             {viewer.isAdmin && <a href="/admin" className="font-semibold text-primary hover:underline">Admin</a>}
             <LogoutButton />
           </div>
