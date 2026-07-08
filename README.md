@@ -16,21 +16,22 @@ Built to answer: **are all accounts being tapped — and how well are we working
 ## Architecture
 
 ```
-scripts/sync.ts ──▶ HubSpot (calls + emails search, v4 batch associations)
-       │            weekly-sliced pull (beats the 10k Search ceiling)
+spine-delta (cron, every 15 min) ──▶ HubSpot (changed calls/emails/companies since watermark)
+       │  runBackfill once, then O(changes) deltas + nightly reconcile
        ▼
-  data/snapshot.json  (per-rep × per-period aggregates + cumulative book coverage + GD units)
-       │            (also uploaded to Vercel Blob if BLOB_READ_WRITE_TOKEN is set)
+  Postgres spine  (sdr_* tables in the call-scoring Supabase — beside, never touching, its tables)
+       │  runner re-runs the unchanged aggregate() over the spine → one jsonb snapshot row
        ▼
   Next.js app ── middleware auth gate (Supabase Google SSO, @spyne.ai) ── /login
-       │  page load: snapshot (book units stripped) + weekly coaching        ▲
-       │  drawer:    /api/rep/[id]/book + /api/rep/[id]/calls (lazy, gated)  │
-       ▼                                                                     │
-  call-scoring Supabase (read-only, service-role key server-side) ──────────┘
+       │  page load: snapshot row (book units stripped) + resolveViewer() default scope + coaching  ▲
+       │  drawer:    /api/rep/[id]/book + /api/rep/[id]/calls (lazy, gated)                          │
+       │  /admin:    roles CRUD + sync health (admin/leadership only)                                │
+       ▼                                                                                             │
+  call-scoring Supabase (read-only, service-role key server-side) ─────────────────────────────────┘
 ```
 
-The heavy pull runs **outside** Vercel (locally or via the GitHub Action) because a full
-sync can exceed serverless time limits. The web app never calls HubSpot at request time;
+The sync runs **outside** Vercel (GitHub Actions cron, or locally) because it can exceed
+serverless time limits. The web app never calls HubSpot at request time;
 call-quality data is read live from Supabase per request.
 
 ## Key definitions
@@ -52,49 +53,64 @@ call-quality data is read live from Supabase per request.
 ```bash
 npm install
 cp .env.local.example .env.local   # add HUBSPOT_PAT + the three Supabase vars
-npm run sync                       # pull from HubSpot → data/snapshot.json
+# one-time: paste supabase/sdr_schema.sql into the Supabase SQL editor, then:
+npm run verify:schema              # confirm the sdr_* tables + RLS floor are in place
+npm run sync:backfill              # populate the Postgres spine (~1 h)
 npm run dev                        # http://localhost:3000
 ```
 
 Required HubSpot Private App scopes: `crm.objects.contacts.read`,
 `crm.objects.companies.read`, and engagement (calls/emails) + associations read.
 
-Supabase (same project as call-scoring-agent) powers **login** (Google SSO, @spyne.ai only)
-and the **call-quality merge** (BANTIC/coaching, read-only). Env vars: `NEXT_PUBLIC_SUPABASE_URL`
-+ `NEXT_PUBLIC_SUPABASE_ANON_KEY` (auth) and `SUPABASE_SERVICE_ROLE_KEY` (server-only reads).
-Without them, local dev runs ungated with call-quality disabled; **production fails closed (503)**.
+Supabase (same project as call-scoring-agent) powers **login** (Google SSO, @spyne.ai only),
+the **data spine** (`sdr_*` tables + the snapshot row), and the **call-quality merge**
+(BANTIC/coaching, read-only). Env vars: `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+(auth) and `SUPABASE_SERVICE_ROLE_KEY` (server-only spine + call-quality reads); optional
+`CRON_SECRET` for the `/api/sync/delta` alt-trigger route. Without the Supabase vars, local dev
+runs ungated with the spine/call-quality disabled; **production fails closed (503)**.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `npm run sync` | Pull from HubSpot, rebuild `data/snapshot.json` |
+| `npm run verify:schema` | Check the `sdr_*` schema is applied (tables, seeds, anon blocked) |
+| `npm run sync:backfill` | One-time full pull into the Postgres spine |
+| `npm run sync:delta` | Incremental change-feed sync (what the 15-min cron runs) |
+| `npm run sync:reconcile` | Nightly drift heal (full book + 7-day activity re-pull) |
 | `npm run dev` | Run the dashboard locally |
 | `npm run build` | Production build (also typechecks) |
-| `npm test` | Unit tests for US/Eastern bucketing (incl. DST) + aggregation |
+| `npm test` | Unit tests for US/Eastern bucketing (incl. DST) + aggregation + access scope |
 
 ## Deploy (Vercel)
 
 1. Import the repo into Vercel.
 2. Set env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
    `SUPABASE_SERVICE_ROLE_KEY` (**required** — the auth middleware 503s without the first two),
-   plus `HUBSPOT_PAT` (and optionally `BLOB_READ_WRITE_TOKEN`).
+   plus `HUBSPOT_PAT` and optionally `CRON_SECRET` (for the `/api/sync/delta` route).
 3. In the Supabase project (call-scoring), enable the **Google provider** (GCP OAuth client;
    redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`) and set the Site URL to the
    Vercel domain. Prefer an **Internal** GCP OAuth app to hard-restrict to the spyne.ai Workspace.
-4. Verify RLS/policies deny `anon` reads on the call-scoring tables (`calls`,
-   `call_quality_insights`, `rep_coaching_snapshots`) — the anon key ships to browsers.
-5. Deploy. The dashboard reads the committed `data/snapshot.json` (or the newest Vercel
-   Blob if configured); call-quality data is read live from Supabase per request.
+   Do **not** enable the email/password provider — the spine's RLS floor trusts the JWT email only
+   alongside `provider=google`.
+4. Apply `supabase/sdr_schema.sql` (SQL editor) and confirm with `npm run verify:schema`. Verify
+   `anon` cannot read the `sdr_*` tables or the call-scoring tables — the anon key ships to browsers.
+5. Add GitHub **repo secrets** for the sync crons: `HUBSPOT_PAT`, `SUPABASE_URL` (= the
+   `NEXT_PUBLIC_SUPABASE_URL` value), `SUPABASE_SERVICE_ROLE_KEY`.
+6. Deploy, then run `npm run sync:backfill` once. The dashboard reads the `sdr_snapshots` row live;
+   call-quality data is read live from Supabase per request.
 
 ## Refresh
 
-- **Local / on-demand:** `npm run sync`, then commit & push (Vercel redeploys).
-- **GitHub Action:** Actions tab → "Sync HubSpot snapshot" → *Run workflow*. It runs the
-  sync and commits the refreshed snapshot. Add `HUBSPOT_PAT` as a repo secret first.
-- **Scheduled:** add a `schedule: - cron:` trigger to `.github/workflows/sync.yml`.
+Fully automated into Postgres — no more commit-the-snapshot.
+
+- **Steady state:** `spine-delta.yml` runs every 15 min; `spine-reconcile.yml` nightly. New data
+  appears in the deployed app with no redeploy (it reads the `sdr_snapshots` row live).
+- **Manual:** Actions tab → *Spine delta sync* / *Spine reconcile* → **Run workflow**; or
+  `GET /api/sync/delta` with `Authorization: Bearer $CRON_SECRET`; or `npm run sync:delta` locally.
+- **Recovery:** if the spine is ever wiped, re-run `npm run sync:backfill`.
 
 ## Security
 
-The HubSpot token lives only in `.env.local` (gitignored) and Vercel/GitHub secrets —
-never in code or the committed snapshot. **Rotate the token** if it was ever shared.
+The HubSpot token and the Supabase service-role key live only in `.env.local` (gitignored) and
+Vercel/GitHub secrets — never in code. Outreach data now lives in Postgres (behind the RLS floor +
+the SSO gate), not in a committed file. **Rotate any secret** if it was ever shared.

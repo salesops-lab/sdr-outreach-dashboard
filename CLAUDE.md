@@ -20,7 +20,14 @@ non-obvious conventions that span multiple files.
 | `npm run build` | Production build — also runs the TypeScript typecheck (there is no separate `tsc` script) |
 | `npm run lint` | ESLint (`next/core-web-vitals`) |
 | `npm test` | Run all Vitest unit tests (`vitest run`) |
-| `npm run sync` | The HubSpot pull → rebuild `data/snapshot.json` (needs `HUBSPOT_PAT`) |
+| `npm run sync` | **Legacy** file-snapshot pull → `data/snapshot.json` (pre-spine; kept for emergencies) |
+| `npm run verify:schema` | Probe that `supabase/sdr_schema.sql` is applied (tables reachable, seeds present, anon blocked) |
+| `npm run sync:backfill` | One-time full pull → Postgres spine (~1 h; run before the first delta) |
+| `npm run sync:delta` | Incremental sync: pull `hs_lastmodifieddate > watermark`, upsert, re-aggregate (O(changes)) |
+| `npm run sync:reconcile` | Nightly drift heal: full owned-book re-pull + 7-day activity re-pull |
+
+The three `sync:*` scripts run via `tsx --conditions=react-server` — required so the `server-only`
+guard in `lib/supabase/admin.ts` resolves to a no-op under plain Node (same trick as `verify:schema`).
 
 Run a **single test**: `npx vitest run tests/buckets.test.ts` (or add `-t "name"` to filter by
 test name; drop `run` for watch mode). Tests live in `tests/` and cover only the pure logic —
@@ -32,36 +39,41 @@ from a test — the `server-only` guard throws under vitest.
 Node 20 (pinned in the GitHub Action; there's no `.nvmrc` or `engines` field). Import alias
 `@/*` maps to the repo root (`tsconfig.json`).
 
-## Architecture: snapshot pipeline + live call-quality reads, behind an auth gate
+## Architecture: change-feed spine → Postgres → snapshot row, behind an auth gate
 
-Two data sources, one gate. **The app never calls HubSpot at request time**; outreach data comes
-from an offline-synced JSON snapshot. Call-quality data is read **live** from the call-scoring
-project's Supabase at request time. Every route sits behind Supabase Google SSO (spyne.ai only).
+Two data sources, one gate. **The app never calls HubSpot at request time.** Outreach data lives in
+a Postgres "data spine" (`sdr_*` tables in the call-scoring project's Supabase, beside — never
+touching — call-scoring's own tables), kept current by an O(changes) delta sync. Call-quality data
+is still read **live** from the same Supabase at request time. Every route sits behind Supabase
+Google SSO (spyne.ai only), and login → HubSpot owner → team resolves a per-viewer default scope.
 
 ```
-scripts/sync.ts  (run locally or via GitHub Action — NOT on Vercel)
-  ├─ lib/sync/pull.ts        pull outbound calls + emails, + each rep's owned-company book
-  ├─ lib/sync/associate.ts   resolve activity → contact → company (v4 batch reads)
-  ├─ lib/sync/buckets.ts     assign each activity to US/Eastern periods (DST-aware)
-  └─ lib/sync/aggregate.ts   per-rep × per-period metrics + book coverage + GD units
-        ↓
-  data/snapshot.json         (committed to git; optionally also uploaded to Vercel Blob)
-        ↓
-  lib/snapshot.ts            loader (Blob else committed file) + stripBookUnits()
-        ↓
+scripts/spine-{backfill,delta,reconcile}.ts  (local or GitHub Actions cron — NOT on Vercel)
+  └─ lib/spine/runner.ts   orchestration (watermark-driven, advisory-locked, idempotent)
+       ├─ lib/sync/pull.ts        pullChangedActivities / pullChangedCompanies (hs_lastmodifieddate > watermark)
+       ├─ lib/sync/associate.ts   resolve activity → contact → company (v4 batch reads)
+       ├─ lib/spine/store.ts      batched upserts into sdr_activities/companies/contacts/owners/teams
+       └─ lib/sync/aggregate.ts   UNCHANGED — re-run over the spine to rebuild the Snapshot
+             ↓  saveSnapshot()
+  sdr_snapshots (one jsonb row, id=1)   ← the delta writes this; getSnapshot reads it first
+             ↓
+  lib/snapshot.ts   getSnapshot: loadFromSpine → loadFromBlob → loadFromFile → empty  (+ stripBookUnits)
+             ↓
   middleware.ts  ── auth gate (session + @spyne.ai domain) ── app/login, app/auth/callback
-        ↓
-  app/page.tsx    snapshot (units stripped) + getCoachingByRep()  → components/Dashboard.tsx
-  app/api/rep/[ownerId]/book    lazy: one rep's GD units (from snapshot, server-side)
-  app/api/rep/[ownerId]/calls   lazy: BANTIC dims + recent analyzed calls (from Supabase)
+             ↓
+  app/page.tsx   resolveViewer(email) + snapshot (units stripped) + getCoachingByRep()  → Dashboard.tsx
+  app/admin      roles CRUD + sync health + unassigned-reps warning  (admin/leadership only)
+  app/api/sync/delta   CRON_SECRET-gated alt trigger for runDelta (crons call the npm script directly)
+  app/api/rep/[ownerId]/book|calls   lazy per-rep drill-downs (book units from spine, calls from Supabase)
         ↑
-  lib/callquality/fetch.ts ── lib/supabase/admin.ts (service-role, server-only, read-only)
+  lib/access/resolve.ts (resolveViewer) · lib/callquality/fetch.ts ── lib/supabase/admin.ts (service-role, server-only)
 ```
 
-The heavy pull runs **outside Vercel** because a full sync exceeds serverless time limits.
-`lib/sync/types.ts` is the shared contract between the sync pipeline and the UI — change a
-metric's shape there and both sides must agree. `lib/callquality/types.ts` is the equivalent
-contract for the call-scoring tables (owned by call-scoring-agent; read-only here).
+The heavy pull runs **outside Vercel** because a sync exceeds serverless time limits; delta runs
+every 15 min via `.github/workflows/spine-delta.yml`, reconcile nightly via `spine-reconcile.yml`.
+`lib/sync/types.ts` is the shared contract between the sync pipeline and the UI; `lib/spine/types.ts`
+holds the `sdr_*` row shapes + the `Viewer` model; `lib/callquality/types.ts` is the read-only
+contract for the call-scoring tables (owned by call-scoring-agent).
 
 ### Data model
 `Snapshot` → `reps[ownerId]` → `{ periods[periodKey]: PeriodMetrics, daily[], book }`. Six US/Eastern
@@ -91,29 +103,56 @@ reaches the client with the page — see the `stripBookUnits` rule under Convent
   also the `IN` filter for the HubSpot searches. To add/remove a rep, edit this file and re-sync.
 - **Snapshot loader must use a static `import()`, not `fs`** (`lib/snapshot.ts`). A runtime file
   path is missed by Vercel's output-file-tracing and breaks in the serverless function.
-- **The 10k Search ceiling is defended by weekly slicing** (`lib/sync/pull.ts`): the window is
-  sliced into 7-day sub-windows sorted ascending by timestamp. A slice nearing 9,000 results logs
-  a warning — if the team's volume grows, slice finer.
-- **Sync degrades gracefully on 403.** `preflight()` probes calls and emails independently; if the
-  token lacks a scope, that object type is dropped (snapshot records this in `sources`) instead of
-  aborting. Emails need the `connected-email-data-access` scope specifically.
-- **Refresh commits must NOT include `[skip ci]`** — Vercel auto-deploys on push, and the whole
-  point of the refresh commit is to trigger a redeploy with the new snapshot. `data/snapshot.json`
-  is committed (~8 MB) and is the fallback data source when Blob isn't configured.
+- **The 10k Search ceiling** is defended two ways: the legacy full pull slices into 7-day
+  sub-windows (`lib/sync/pull.ts`); the delta pulls (`pullChangedActivities`/`pullChangedCompanies`)
+  cut each modified-window at 9,800 results and resume from `lastmodified − 1` (GTE-equivalent —
+  the `GT` filter would otherwise skip records sharing the boundary ms; callers dedupe the
+  re-reads). A run does at most `MAX_RESUME_WINDOWS` (3) catch-up windows, then defers the rest to
+  the next run — the watermark still advances, so backlogs drain across runs without a livelock.
+- **Sync degrades gracefully on 403.** `preflightCaps()` (`lib/spine/runner.ts`) probes calls and
+  emails independently and returns false **only** on a 403 scope error (other errors rethrow); a
+  dropped object type is recorded in the snapshot's `sources`. Emails need the
+  `connected-email-data-access` scope specifically.
+- **Change-feed sync is watermark-driven and idempotent.** Per-type watermarks live in
+  `sdr_sync_state`; each delta re-reads from `watermark − OVERLAP_MS` (5 min, absorbs clock skew /
+  same-ms writes) and advances the watermark to the max `hs_lastmodifieddate` actually persisted —
+  **only after** the upserts + re-aggregate succeed, so a mid-run crash re-does work rather than
+  skipping it (all upserts are PK-idempotent). One run at a time via an advisory lock (the
+  `lock` row in `sdr_sync_state`), fenced by a lease token so a stalled runner can't release a
+  successor's lock. Owner-moves-AWAY from a tracked rep are invisible to the delta (it only sees
+  changed rows) and are corrected by the nightly reconcile's full owned-book re-pull; HubSpot
+  **deletions** are not propagated (known accepted gap).
+- **`aggregate()`'s input now comes from `lib/spine/store.ts`** (`loadStoreForAggregate`), not the
+  live pull. `aggregate.ts` itself is unchanged — the runner reconstructs the same argument shape
+  from the `sdr_*` rows and re-runs it to rebuild the one-row jsonb snapshot. Paged reads
+  (`fetchAll`) require a unique total order (PK-inclusive) because PostgREST paginates by OFFSET.
 - **Company attribution order** (`lib/sync/associate.ts`): primary company of each associated
   contact; if an activity has no contact, a direct engagement→company association; else counted as
   unattributed.
 - **Secrets live only in `.env.local` / Vercel / GitHub secrets** — `HUBSPOT_PAT` (required for
-  sync), `BLOB_READ_WRITE_TOKEN` (optional, enables no-redeploy refresh), plus three Supabase vars
-  required by the web app: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (auth) and
-  `SUPABASE_SERVICE_ROLE_KEY` (server-only call-quality reads). **In production the middleware
-  fails CLOSED (503 on every route) if the two `NEXT_PUBLIC_SUPABASE_*` vars are missing** — set
-  them in Vercel before deploying. Never commit any of these.
-- **Auth gate (Phase 1).** Every route requires a Supabase Google SSO session belonging to an
-  `@spyne.ai` account. `middleware.ts` is the single source of truth (session + domain via
-  `lib/auth/domain.ts`); the OAuth callback's domain check is belt-and-braces and explicitly
-  expires cookies on rejection. `/api/*` gets JSON 401; pages redirect to `/login`. Missing env =
-  pass-through in dev, 503 in prod.
+  sync), three Supabase vars required by the web app: `NEXT_PUBLIC_SUPABASE_URL`,
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY` (auth) and `SUPABASE_SERVICE_ROLE_KEY` (server-only spine +
+  call-quality reads), and `CRON_SECRET` (optional; only the `/api/sync/delta` alt-trigger route
+  needs it — the crons call the npm script directly). **In production the middleware fails CLOSED
+  (503 on every route) if the two `NEXT_PUBLIC_SUPABASE_*` vars are missing** — set them in Vercel
+  before deploying. The GitHub Actions crons need repo secrets `HUBSPOT_PAT`, `SUPABASE_URL` (=
+  the `NEXT_PUBLIC_SUPABASE_URL` value) and `SUPABASE_SERVICE_ROLE_KEY`. Never commit any of these.
+- **Auth gate + focus-model scoping.** Every route requires a Supabase Google SSO session belonging
+  to an `@spyne.ai` account. `middleware.ts` is the single source of truth (session + domain via
+  `lib/auth/domain.ts`); `PUBLIC_PATHS` exempts only `/login`, `/auth`, and `/api/sync/delta` (that
+  route self-authenticates via a constant-time `CRON_SECRET` Bearer check). `/api/*` gets JSON 401;
+  pages redirect to `/login`. Missing env = pass-through in dev, 503 in prod. On top of the gate,
+  `resolveViewer` (`lib/access/resolve.ts`) maps login → `sdr_roles` override → HubSpot owner/team
+  → a **default** scope (`Viewer.defaultOwnerIds`). This is a **focus model, not confidentiality**:
+  everyone keeps org-wide visibility; the "My team / All reps" toggle just picks the default view.
+  admin/leadership get `/admin`. The pure decision is `decideScope` in `lib/access/scope.ts`
+  (split out so the unit test imports it without the `server-only` guard); `resolveViewer` never
+  throws — any failure degrades to an org-wide viewer.
+- **RLS floor (defense in depth).** The `sdr_*` tables have RLS enabling `SELECT` only for
+  `authenticated` requests whose JWT email is `@spyne.ai` **and** whose provider is `google`
+  (`supabase/sdr_schema.sql`); there are no write policies, so all writes go through the
+  service-role key (which bypasses RLS). The email claim is only trusted because the shared project
+  must not enable email/password signup — see the comment above the schema's policy block.
 - **Call-quality merge (read-only).** The app reads the call-scoring project's Supabase tables
   (`rep_coaching_snapshots`, `calls`, `call_quality_insights`) server-side via the service-role
   key (`lib/supabase/admin.ts`, guarded by `server-only`; `lib/callquality/*`). Call-scoring
@@ -159,7 +198,15 @@ trend are all pure HTML/CSS (Tailwind + conic-gradient / flex widths). State is 
 
 ## Refresh workflow
 
-- **On demand:** `npm run sync`, then commit & push `data/snapshot.json`.
-- **GitHub Action:** `.github/workflows/sync.yml` (`workflow_dispatch`) runs the sync and commits
-  the refreshed snapshot. It's manual-only today; add a `schedule: - cron:` block to automate.
-  Requires the `HUBSPOT_PAT` repo secret.
+Data now refreshes **automatically into Postgres** — there is no more commit-the-snapshot step.
+
+- **First-time setup:** apply `supabase/sdr_schema.sql` in the Supabase SQL editor, run
+  `npm run verify:schema`, then `npm run sync:backfill` once (~1 h) to populate the spine.
+- **Steady state:** `.github/workflows/spine-delta.yml` runs `npm run sync:delta` every 15 min and
+  `spine-reconcile.yml` runs `npm run sync:reconcile` nightly (06:30 UTC). Both need repo secrets
+  `HUBSPOT_PAT`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. The delta writes the `sdr_snapshots`
+  row; the deployed app reads it live (no redeploy needed to see new data).
+- **Manual trigger:** `workflow_dispatch` on either workflow, or `GET /api/sync/delta` with an
+  `Authorization: Bearer $CRON_SECRET` header.
+- **Legacy:** `data/snapshot.json` is now an empty placeholder kept only as a build-time static
+  import + last-ditch fallback; `npm run sync` + the old `sync.yml` are retired.
