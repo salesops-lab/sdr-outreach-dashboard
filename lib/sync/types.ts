@@ -110,6 +110,8 @@ export const MARKET_SEGMENT_LABELS: Record<MarketSegment, string> = {
 
 export type DealershipType = "Franchise" | "Independent" | "Unknown";
 
+export type Temperature = "hot" | "warm" | "cold";
+
 /** One engaged contact on a rooftop, with its own activity recency + temperature. */
 export interface RooftopContact {
   id: string;
@@ -152,6 +154,8 @@ export interface BookUnitDetail {
   dealership: DealershipType;
   segment: MarketSegment;
   tapped: boolean;
+  temp: Temperature; // unit-level temperature (aggregated from rooftops for GD, single rooftop for single unit)
+  temp_reason: string; // why this temperature
   rooftops: RooftopDetail[]; // tapped first (by calls+emails desc), then untapped (name asc)
 }
 
@@ -204,8 +208,6 @@ export interface Insight {
   level: InsightLevel;
   text: string;
 }
-
-export type Temperature = "hot" | "warm" | "cold";
 
 export interface ContactRef {
   id: string;
