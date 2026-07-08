@@ -171,10 +171,26 @@ export async function loadStoreForAggregate(anchorMs: number): Promise<StoreForA
 }
 
 export async function saveSnapshot(snap: Snapshot) {
-  // generated_at is stamped from the runner's clock — skew shows in admin sync-health as-is.
-  const { error } = await sb().from("sdr_snapshots")
-    .upsert({ id: 1, data: snap as unknown as object, generated_at: new Date().toISOString() }, { onConflict: "id" });
-  if (error) throw new Error(`[spine] saveSnapshot: ${error.message}`);
+  const data = snap as unknown as object;
+  // Prefer the RPC, which raises statement_timeout for the large (~6 MB) jsonb write (the plain
+  // upsert intermittently trips the default per-request timeout from CI). Fall back to a direct
+  // upsert if the function is not deployed yet — so this is safe before the schema is applied.
+  const { error: rpcErr } = await sb().rpc("sdr_save_snapshot", { p_data: data });
+  if (!rpcErr) return;
+  if (!/could not find the function|does not exist|schema cache/i.test(rpcErr.message)) {
+    throw new Error(`[spine] saveSnapshot (rpc): ${rpcErr.message}`);
+  }
+  // Fallback (until sdr_save_snapshot is applied): the ~6 MB jsonb write intermittently trips the
+  // default statement timeout, so retry with backoff. A failed write leaves the last good row intact.
+  let lastErr = "";
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const { error } = await sb().from("sdr_snapshots")
+      .upsert({ id: 1, data, generated_at: new Date().toISOString() }, { onConflict: "id" });
+    if (!error) return;
+    lastErr = error.message;
+    await new Promise((r) => setTimeout(r, 1500 * attempt));
+  }
+  throw new Error(`[spine] saveSnapshot (after retries): ${lastErr}`);
 }
 
 export async function loadSnapshotRow(): Promise<Snapshot | null> {

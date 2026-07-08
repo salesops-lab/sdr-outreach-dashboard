@@ -3,6 +3,7 @@ import { supabaseServer } from "../../lib/supabase/server";
 import { supabaseAdmin } from "../../lib/supabase/admin";
 import { resolveViewer } from "../../lib/access/resolve";
 import { REPS, REP_OWNER_IDS } from "../../config/reps";
+import { AE_PODS, AE_EMAIL, MANAGERS, SDR_TEAM, sdrOwnersInPod, sdrOwnersUnderManager, managerKeyByOwnerId } from "../../config/team-structure";
 import { addRole, removeRole } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -24,8 +25,10 @@ export default async function AdminPage() {
   const syncState = await rows(sb?.from("sdr_sync_state").select("*").order("key"));
 
   const teamName = new Map((teams as { team_id: string; name: string }[]).map((t) => [t.team_id, t.name]));
-  const assigned = new Set((members as { owner_id: string }[]).map((m) => m.owner_id));
-  const unassigned = REP_OWNER_IDS.filter((id) => !assigned.has(id));
+  void members; // HubSpot team membership no longer drives scope (AE-pod/manager config does).
+  const names = (ids: string[]) => ids.map((id) => REPS[id] ?? id).join(", ");
+  // Scope is config-driven now: an SDR is "mapped" if it's in an AE pod or is itself a manager.
+  const unmapped = REP_OWNER_IDS.filter((id) => !(id in SDR_TEAM) && !managerKeyByOwnerId(id));
 
   return (
     <main className="mx-auto max-w-5xl space-y-8 px-4 py-8 sm:px-6">
@@ -34,12 +37,33 @@ export default async function AdminPage() {
         <a href="/" className="text-sm text-blue-600 hover:underline">← Dashboard</a>
       </header>
 
-      {unassigned.length > 0 && (
-        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">
-          ⚠️ {unassigned.length} tracked reps are in <b>no HubSpot team</b> (invisible to every manager
-          scope): {unassigned.map((id) => REPS[id]).join(", ")}. Assign them to teams in HubSpot.
+      <section className="rounded-2xl border border-slate-200 bg-white p-5">
+        <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-500">Team structure (AE pods → SDRs · managers → teams)</h2>
+        <p className="mb-4 text-xs text-slate-500">Focus-model default scope, from <code>config/team-structure.ts</code> (edit there, not HubSpot teams). Everyone keeps the org-wide toggle.</p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">AE pods</div>
+            <ul className="space-y-1.5 text-sm">
+              {AE_PODS.map((pod) => {
+                const ids = sdrOwnersInPod(pod).filter((id) => REP_OWNER_IDS.includes(id));
+                return <li key={pod}><span className="font-semibold capitalize">{pod}</span> <span className="text-xs text-slate-400">{AE_EMAIL[pod] ?? "(pool)"}</span><div className="text-xs text-slate-600">{ids.length ? names(ids) : "—"}</div></li>;
+              })}
+            </ul>
+          </div>
+          <div>
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Managers / TLs</div>
+            <ul className="space-y-1.5 text-sm">
+              {Object.entries(MANAGERS).map(([key, m]) => {
+                const ids = sdrOwnersUnderManager(key).filter((id) => REP_OWNER_IDS.includes(id));
+                return <li key={key}><span className="font-semibold">{m.name}</span>{m.parent && <span className="text-xs text-slate-400"> → {MANAGERS[m.parent]?.name}</span>}<div className="text-xs text-slate-600">{ids.length} SDRs: {names(ids) || "—"}</div></li>;
+              })}
+            </ul>
+          </div>
         </div>
-      )}
+        {unmapped.length > 0 && (
+          <p className="mt-4 text-xs text-slate-500">Not in any pod (default to own-data view): {names(unmapped)}.</p>
+        )}
+      </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5">
         <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-500">Roles</h2>

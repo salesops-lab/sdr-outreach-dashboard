@@ -140,6 +140,24 @@ create table if not exists sdr_agent_notes (
 );
 create index if not exists idx_sdr_note_account on sdr_agent_notes(account_id, created_at);
 
+-- Snapshot write helper: raises statement_timeout for the large (~6 MB) single-row jsonb upsert,
+-- which otherwise intermittently trips the default per-request timeout from CI runners. Called by
+-- saveSnapshot(); a plain upsert is used as a fallback until this function is applied.
+create or replace function sdr_save_snapshot(p_data jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  set local statement_timeout = '120s';
+  insert into sdr_snapshots(id, data, generated_at)
+  values (1, p_data, now())
+  on conflict (id) do update set data = excluded.data, generated_at = excluded.generated_at;
+end;
+$$;
+grant execute on function sdr_save_snapshot(jsonb) to service_role;
+
 -- Seeds (idempotent)
 insert into sdr_sync_state(key) values ('calls'),('emails'),('companies'),('owners'),('lock'),('agent')
   on conflict (key) do nothing;
