@@ -14,7 +14,8 @@ import { companyUrl, contactUrl } from "../config/hubspot";
 import { Chip, TempBadge, Bar, cn } from "./ui";
 import { STAGE_CHIP } from "./ui-tokens";
 
-const fmt = (n: number) => n.toLocaleString("en-IN");
+// Null-safe: a snapshot written by older sync code may omit per-contact fields.
+const fmt = (n: number | null | undefined) => (n ?? 0).toLocaleString("en-IN");
 
 function etDate(ms: number | null): string {
   if (!ms) return "—";
@@ -63,7 +64,7 @@ function ContactsTable({ contacts }: { contacts: RooftopContact[] }) {
               <Phone className="h-3 w-3 text-ink-subtle" />{fmt(c.calls)}
               <Mail className="ml-1 h-3 w-3 text-ink-subtle" />{fmt(c.emails)}
             </span>
-            <span className="flex justify-end"><TempBadge temp={c.temp} showLabel={false} title={`${c.temp}`} /></span>
+            <span className="flex justify-end"><TempBadge temp={c.temp ?? "cold"} showLabel={false} title={`${c.temp ?? "cold"}`} /></span>
           </div>
         ))}
       </div>
