@@ -1,5 +1,7 @@
 import { Flame } from "lucide-react";
 import { listWatches } from "../../lib/agent/store";
+import { resolveViewer } from "../../lib/access/resolve";
+import { supabaseServer } from "../../lib/supabase/server";
 import AttentionBoard from "../../components/AttentionBoard";
 import LogoutButton from "../../components/LogoutButton";
 
@@ -7,7 +9,16 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function AttentionPage() {
-  const watches = await listWatches();
+  const { data: { user } } = await supabaseServer().auth.getUser().catch(() => ({ data: { user: null } }));
+  const [watches, viewer] = await Promise.all([
+    listWatches(),
+    resolveViewer(user?.email ?? ""),
+  ]);
+
+  // Filter watches by viewer's scope (RBAC)
+  const scopeSet = new Set(viewer.defaultOwnerIds);
+  const filteredWatches = watches.filter(w => scopeSet.has(w.repId ?? ""));
+
   return (
     <main className="mx-auto max-w-[1100px] px-4 py-7 sm:px-6">
       <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -25,7 +36,7 @@ export default async function AttentionPage() {
           <LogoutButton />
         </div>
       </header>
-      <AttentionBoard watches={watches} />
+      <AttentionBoard watches={filteredWatches} />
     </main>
   );
 }
