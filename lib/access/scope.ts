@@ -1,8 +1,9 @@
 /** Pure scope decision (focus model: org view stays available to all) — unit-tested.
  *  Three layers from config/team-structure: SDR → AE pod → Manager (with TLs rolling up).
+ *  AE pod layer now includes both AEs and SDRs (via allOwnersInPod).
  *  Lives apart from resolve.ts so tests can import it without the server-only guard. */
 import { Role, Viewer } from "../spine/types";
-import { podByEmail, sdrOwnersInPod, managerKeyByOwnerId, sdrOwnersUnderManager } from "../../config/team-structure";
+import { podByEmail, allOwnersInPod, managerKeyByOwnerId, sdrOwnersUnderManager } from "../../config/team-structure";
 
 export function decideScope(
   email: string,
@@ -15,10 +16,10 @@ export function decideScope(
     return { email, role: roleRow.role as Role, defaultOwnerIds: allTracked, isAdmin: true };
   }
 
-  // AE pod (middle layer), by login email → default to the pod's SDRs.
+  // AE pod (middle layer), by login email → default to the pod's SDRs + AEs.
   const pod = podByEmail(email);
   if (pod) {
-    const scope = sdrOwnersInPod(pod).filter((id) => allTracked.includes(id));
+    const scope = allOwnersInPod(pod).filter((id) => allTracked.includes(id));
     if (scope.length) return { email, role: "manager", defaultOwnerIds: scope, isAdmin: false };
   }
 
@@ -30,7 +31,7 @@ export function decideScope(
     if (scope.length) return { email, role: "manager", defaultOwnerIds: scope, isAdmin: false };
   }
 
-  // Individual SDR → their own book.
+  // Individual SDR/AE → their own book.
   if (trackedOwnerId) return { email, role: "rep", defaultOwnerIds: [trackedOwnerId], isAdmin: false };
 
   // Everyone else keeps org-wide visibility (focus model default).

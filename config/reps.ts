@@ -1,11 +1,14 @@
 /**
- * The 30 SDRs this dashboard tracks: HubSpot owner ID -> display name.
+ * SDRs + AEs this dashboard tracks: HubSpot owner ID -> display name.
  *
  * Resolved against HubSpot portal 242626590 (app-na2.hubspot.com) and
  * cross-checked against the existing call-scoring-agent sdr_map.ts.
  * This is the single source of truth for who appears on the dashboard.
+ * 
+ * AEs added for pod visibility (each pod lead sees their AEs + SDRs).
  */
 export const REPS: Record<string, string> = {
+  // Existing SDRs (30)
   "66975998": "Sanamdeep .",
   "69016314": "Rajveer Singh",
   "160353848": "Utsav Yadav",
@@ -36,6 +39,24 @@ export const REPS: Record<string, string> = {
   "165126708": "Lakshya Gaurh",
   "165867085": "Sourav Singh",
   "165725776": "Animesh Anand",
+   
+  // AEs added for AE Pod visibility
+  // Archit Pod
+  "300786392766": "Liam Fallon",
+  "283366799094": "Anmol Sehgal",
+  "314515428073": "Jace Larsen",
+  // Neelima Pod
+  "207645325029": "Arun Divya Prakash",
+  "303562897138": "Pallav Pandey",
+  "129303672507": "Jatin Arora",
+  // Saarthak Pod
+  "127226246901": "Jaiaditya Berry",
+  "127556571875": "Saurabh Nawale",
+  "127219567335": "Shivam Ahuja",
+  // Shashank Pod
+  "128676855527": "Ankur Patel",
+  "127555089110": "Vanshit Kothari",
+  "127556567790": "Mayank Joshi",
 };
 
 /** Owner IDs as an array — used as the `IN` filter for HubSpot searches. */

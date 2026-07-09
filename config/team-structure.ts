@@ -2,6 +2,9 @@
  * SDR org hierarchy for the focus-model RBAC (per the "AE Pod (New)" sheet).
  * Three layers: SDR → AE pod → Manager. Some SDRs are ALSO managers/TLs ("player-coaches"):
  * they keep their SDR owner id AND get a team view. TLs (Shikhar, Kshitij) roll up to Vaibhav.
+ * 
+ * AE PODs now include AE users for each pod (e.g., Liam Fallon, Anmol Sehgal in Archit pod).
+ * AE POD leads see their AEs + their SDRs (same scope model).
  *
  * Keyed by HubSpot owner id (from config/reps.ts). This drives DEFAULT scope only — everyone
  * keeps the org-wide "All reps" toggle (focus model, not confidentiality).
@@ -12,7 +15,7 @@
  * AE login). Sourav Singh + Animesh Anand are now tracked (added to config/reps.ts).
  */
 
-export const AE_PODS = ["saarthak", "neelima", "archit", "prince", "central"] as const;
+export const AE_PODS = ["saarthak", "neelima", "archit", "prince", "central", "shashank"] as const;
 export type AePod = (typeof AE_PODS)[number];
 
 /** AE login email → pod. "central" is a pool with no dedicated AE login. */
@@ -21,6 +24,7 @@ export const AE_EMAIL: Partial<Record<AePod, string>> = {
   neelima: "neelima.tiwari@spyne.ai",
   archit: "archit.gupta@spyne.ai",
   prince: "prince.arora@spyne.ai",
+  shashank: "shashank@spyneai.co",
 };
 
 /** Managers (player-coach SDRs). `parent` = the manager they roll up to (TLs → Vaibhav). */
@@ -64,12 +68,25 @@ export const SDR_TEAM: Record<string, { pod: AePod; manager: string }> = {
   "165725776": { pod: "central", manager: "shikhar" }, // Animesh Anand (TL Shikhar's team)
 };
 
-/** Which manager (if any) this owner id IS (player-coach lookup). */
-export function managerKeyByOwnerId(ownerId: string | null | undefined): string | null {
-  if (!ownerId) return null;
-  for (const [key, m] of Object.entries(MANAGERS)) if (m.ownerId === ownerId) return key;
-  return null;
-}
+/** AE owner id → pod. Maps Account Executives to their AE POD. */
+export const AE_TEAM: Record<string, AePod> = {
+  // Archit Pod
+  "300786392766": "archit", // Liam Fallon
+  "283366799094": "archit", // Anmol Sehgal
+  "314515428073": "archit", // Jace Larsen
+  // Neelima Pod
+  "207645325029": "neelima", // Arun Divya Prakash
+  "303562897138": "neelima", // Pallav Pandey
+  "129303672507": "neelima", // Jatin Arora
+  // Saarthak Pod
+  "127226246901": "saarthak", // Jaiaditya Berry
+  "127556571875": "saarthak", // Saurabh Nawale
+  "127219567335": "saarthak", // Shivam Ahuja
+  // Shashank Pod
+  "128676855527": "shashank", // Ankur Patel
+  "127555089110": "shashank", // Vanshit Kothari
+  "127556567790": "shashank", // Mayank Joshi
+};
 
 /** Which pod a login email leads, if any. */
 export function podByEmail(email: string | null | undefined): AePod | null {
@@ -77,6 +94,20 @@ export function podByEmail(email: string | null | undefined): AePod | null {
   const lower = email.toLowerCase();
   for (const pod of AE_PODS) if (AE_EMAIL[pod] === lower) return pod;
   return null;
+}
+
+/** Which manager (if any) this owner id IS (player-coach lookup). */
+export function managerKeyByOwnerId(ownerId: string | null | undefined): string | null {
+  if (!ownerId) return null;
+  for (const [key, m] of Object.entries(MANAGERS)) if (m.ownerId === ownerId) return key;
+  return null;
+}
+
+/** All owner ids (SDRs + AEs) in a pod. */
+export function allOwnersInPod(pod: AePod): string[] {
+  const sdrs = Object.entries(SDR_TEAM).filter(([, t]) => t.pod === pod).map(([id]) => id);
+  const aes = Object.entries(AE_TEAM).filter(([, p]) => p === pod).map(([id]) => id);
+  return [...sdrs, ...aes];
 }
 
 /** SDR owner ids in a pod. */
