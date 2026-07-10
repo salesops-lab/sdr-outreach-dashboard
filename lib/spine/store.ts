@@ -156,10 +156,16 @@ export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]
   const coRows = await fetchAll<CompanyRow>("sdr_companies",
     "hs_id,name,gd_stage,lifecycle_stage,owner_id,gd_id,is_group,group_name,segment,dealership_type,last_activity_ms,rooftop_last_activity_ms", ["hs_id"]);
   const ctRows = await fetchAll<ContactRow>("sdr_contacts", "hs_id,name,title,dm", ["hs_id"]);
-  // Deals are already scoped to tracked owners at pull time, so load them all.
-  const dealRows = await fetchAll<DealRow>("sdr_deals",
-    "hs_id,pipeline,dealstage,stage_key,deal_owner_id,sdr_owner_id,company_id,contact_ids,amount,demo_scheduled_for_ms,discovery_done_ms,demo_done_ms,is_closed_won,is_closed_lost",
-    ["hs_id"]);
+  // Deals are already scoped to tracked owners at pull time, so load them all. Tolerate the table
+  // being absent (V2 migration not yet applied) so the snapshot still rebuilds without deals.
+  let dealRows: DealRow[] = [];
+  try {
+    dealRows = await fetchAll<DealRow>("sdr_deals",
+      "hs_id,pipeline,dealstage,stage_key,deal_owner_id,sdr_owner_id,company_id,contact_ids,amount,demo_scheduled_for_ms,discovery_done_ms,demo_done_ms,is_closed_won,is_closed_lost",
+      ["hs_id"]);
+  } catch (e) {
+    console.warn(`[spine] sdr_deals unavailable (${e instanceof Error ? e.message : e}) — aggregating without deals until the V2 migration is applied`);
+  }
 
   const companyNames: Record<string, string> = {};
   const companyGdStage: Record<string, string | null> = {};

@@ -91,11 +91,18 @@ async function persistResolved(raw: RawActivity[]) {
 /** Pull → resolve → upsert Auto-Pipeline deals for tracked owners. Returns the enriched deals so
  *  the caller can advance the `deals` watermark (nextWatermark reads their lastModifiedMs). */
 async function persistDeals(sinceMs: number, maxWindows?: number, ownerIdsOverride?: string[]): Promise<(Deal & { lastModifiedMs: number })[]> {
-  const raw = await pullChangedDeals(sinceMs, maxWindows, ownerIdsOverride);
-  if (!raw.length) return [];
-  const deals = await resolveDealAssociations(raw);
-  await upsertDeals(deals.map((d) => dealToRow(d, d.lastModifiedMs)));
-  return deals;
+  try {
+    const raw = await pullChangedDeals(sinceMs, maxWindows, ownerIdsOverride);
+    if (!raw.length) return [];
+    const deals = await resolveDealAssociations(raw);
+    await upsertDeals(deals.map((d) => dealToRow(d, d.lastModifiedMs)));
+    return deals;
+  } catch (e) {
+    // Degrade gracefully if the V2 migration (sdr_deals) hasn't been applied yet — the rest of
+    // the sync must keep working. Once the schema is applied the next run picks deals up.
+    console.warn(`[spine] deals sync skipped (${e instanceof Error ? e.message : e}) — apply the V2 migration if this persists`);
+    return [];
+  }
 }
 
 /** Rebuild the snapshot row from the spine. `expectData` guards the unattended cron:
@@ -129,13 +136,18 @@ export async function runDelta(caps?: PullCaps): Promise<{ ran: boolean }> {
   if (!lease) { console.log("[delta] another run holds the lock — exiting."); return { ran: false }; }
   const t0 = Date.now();
   try {
-    const [wmCalls, wmEmails, wmCompanies, wmDeals] = await Promise.all([
-      getWatermark("calls"), getWatermark("emails"), getWatermark("companies"), getWatermark("deals")]);
+    const [wmCalls, wmEmails, wmCompanies] = await Promise.all([
+      getWatermark("calls"), getWatermark("emails"), getWatermark("companies")]);
     if (wmCalls === 0 && wmEmails === 0 && wmCompanies === 0) throw new Error("Watermarks are zero — run `npm run sync:backfill` first.");
+    // Deals watermark may be absent until the V2 migration is applied — tolerate it (skip deals).
+    const wmDeals = await getWatermark("deals").catch((e) => {
+      console.warn(`[delta] deals watermark unavailable (${e instanceof Error ? e.message : e}) — skipping deals until the V2 migration is applied`);
+      return null;
+    });
 
     const raw = await pullChangedActivities(Math.max(0, wmCalls - OVERLAP_MS), Math.max(0, wmEmails - OVERLAP_MS), caps);
     const changedCompanies = await pullChangedCompanies(Math.max(0, wmCompanies - OVERLAP_MS));
-    const changedDeals = await persistDeals(Math.max(0, wmDeals - OVERLAP_MS));
+    const changedDeals = wmDeals != null ? await persistDeals(Math.max(0, wmDeals - OVERLAP_MS)) : [];
 
     let upserted = 0;
     if (raw.length) upserted = await persistResolved(raw);
@@ -156,7 +168,7 @@ export async function runDelta(caps?: PullCaps): Promise<{ ran: boolean }> {
     await setSyncState("calls", { watermark_ms: nextWatermark(wmCalls, calls), last_counts: { changed: calls.length } });
     await setSyncState("emails", { watermark_ms: nextWatermark(wmEmails, emails), last_counts: { changed: emails.length } });
     await setSyncState("companies", { watermark_ms: nextWatermark(wmCompanies, changedCompanies), last_counts: { changed: changedCompanies.length } });
-    await setSyncState("deals", { watermark_ms: nextWatermark(wmDeals, changedDeals), last_counts: { changed: changedDeals.length } });
+    if (wmDeals != null) await setSyncState("deals", { watermark_ms: nextWatermark(wmDeals, changedDeals), last_counts: { changed: changedDeals.length } });
     await setSyncState("owners", { last_counts: { owners: ownerCount } });
     await setSyncState("lock", { last_duration_ms: Date.now() - t0, last_counts: { activities: upserted, snapshotCalls: totals.calls }, notes: "delta ok" });
     console.log(`[delta] done in ${((Date.now() - t0) / 1000).toFixed(1)}s — ${raw.length} changed activities, ${changedCompanies.length} companies.`);

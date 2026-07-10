@@ -53,7 +53,7 @@ export default function AccountsView({ snapshot, viewer }: { snapshot: Snapshot;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const reps = useMemo(() => scopeIds
-    .filter((id) => lens === "all" || (snapshot.owner_kinds[id] ?? "sdr") === lens)
+    .filter((id) => lens === "all" || (snapshot.owner_kinds?.[id] ?? "sdr") === lens)
     .map((id) => ({ id, name: snapshot.owner_names[id] ?? `ID:${id}`, funnel: snapshot.reps[id]?.funnel }))
     .sort((a, b) => a.name.localeCompare(b.name)), [scopeIds, lens, snapshot]);
 

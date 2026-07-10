@@ -62,7 +62,7 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
   const allRows = useMemo<Row[]>(() =>
     Object.entries(snapshot.reps)
       .filter(([id]) => scopeMode === "all" || viewer.defaultOwnerIds.includes(id))
-      .filter(([id]) => kindMode === "all" || (snapshot.owner_kinds[id] ?? "sdr") === kindMode)
+      .filter(([id]) => kindMode === "all" || (snapshot.owner_kinds?.[id] ?? "sdr") === kindMode)
       .map(([ownerId, data]) => {
         const m = data.periods[period];
         return { ownerId, name: snapshot.owner_names[ownerId] ?? `ID:${ownerId}`, data, m, touches: m.calls.total + m.emails.sent };
@@ -88,7 +88,8 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
       a.touches += r.touches; a.contacts += r.m.contacts.total; a.companies += r.m.companies.total;
       a.calls += r.m.calls.total; a.connected += r.m.calls.connected; a.denom += r.m.calls.connected + r.m.calls.not_connected;
       a.meetings += r.m.meetings_booked; a.unitsTapped += r.data.book.units_tapped; a.unitsTotal += r.data.book.units_total; a.hot += r.m.temp.hot;
-      a.pending += r.data.funnel.demo_pending; a.scheduled += r.data.funnel.demo_scheduled; a.done += r.data.funnel.demo_done; a.atRisk += r.data.funnel.scheduled_at_risk;
+      const f = r.data.funnel; // absent on a pre-V2 snapshot (before the deals backfill) — guard
+      if (f) { a.pending += f.demo_pending; a.scheduled += f.demo_scheduled; a.done += f.demo_done; a.atRisk += f.scheduled_at_risk; }
       if (r.touches > 0) a.active++;
     }
     return { ...a, emails: a.touches - a.calls, connectRate: a.denom ? a.connected / a.denom : 0, coverage: a.unitsTotal ? a.unitsTapped / a.unitsTotal : 0 };
