@@ -4,7 +4,7 @@
  * the dashboard must keep working without call data.
  */
 import { supabaseAdmin } from "../supabase/admin";
-import { REP_OWNER_IDS } from "../../config/reps";
+import { getTrackedOwnerIds } from "../team/load";
 import { pickLatestSnapshots, aggregateDims, joinCallInsights } from "./map";
 import { CallRow, CoachingRow, CoachingSnapshot, InsightRow, RepCallsPayload } from "./types";
 
@@ -25,7 +25,7 @@ export async function getCoachingByRep(): Promise<Record<string, CoachingSnapsho
       )
       .eq("period_type", "weekly")
       .eq("scope", "rep")
-      .in("hubspot_owner_id", REP_OWNER_IDS)
+      .in("hubspot_owner_id", await getTrackedOwnerIds())
       .order("period_end", { ascending: false })
       .limit(300);
     if (error) {

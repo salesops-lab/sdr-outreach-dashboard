@@ -9,7 +9,7 @@
  *     activity on any of its rooftops (over the coverage-anchor window).
  */
 
-import { REPS, REP_OWNER_IDS } from "../../config/reps";
+// Tracked owner ids + names come in via the `roster` param (DB-backed, resolved by the runner).
 import {
   isConnected, isMeeting, isMeetingRescheduled, isCallbackHigh, isCallbackLow, isGaveReferral, isNegative, dispositionLabel,
 } from "../../config/dispositions";
@@ -604,7 +604,12 @@ export function aggregate(
   ctx: EtContext,
   generatedAtMs: number,
   sources: { calls: boolean; emails: boolean },
+  roster: { ownerIds: string[]; names: Record<string, string> },
 ): Snapshot {
+  // Tracked set + names are DB-backed (config fallback) — see lib/team/load. Shadowed under the
+  // former config names so the aggregation body below is unchanged.
+  const REP_OWNER_IDS = roster.ownerIds;
+  const REPS = roster.names;
   const accs = new Map<string, Map<PeriodKey, Acc>>();
   const dailyAcc = new Map<string, Map<string, { calls: number; connected: number; emails: number }>>();
   const ownedSets = new Map<string, Set<string>>();

@@ -3,6 +3,12 @@ import { aggregate } from "../lib/sync/aggregate";
 import { makeEtContext } from "../lib/sync/buckets";
 import { Activity } from "../lib/sync/types";
 import { OwnedCompany } from "../lib/sync/pull";
+import { configTeamStructure } from "../lib/team/config-source";
+import { trackedOwnerIds, nameMap } from "../lib/team/helpers";
+
+// Full config-derived roster (= the pre-DB behavior: aggregate iterated all REP_OWNER_IDS).
+const TS = configTeamStructure();
+const ROSTER = { ownerIds: trackedOwnerIds(TS), names: nameMap(TS) };
 
 const DAY_MS = 86_400_000;
 const NOW = Date.UTC(2026, 5, 29, 16, 0, 0); // 2026-06-29 12:00 EDT (US/Eastern, UTC-4)
@@ -61,7 +67,7 @@ describe("aggregate", () => {
     { X: "In Pipeline", Y: "Prospect" }, // companyGdStage (drives per-account chip)
     contactMeta,
     owned,
-    ctx, NOW, { calls: true, emails: true },
+    ctx, NOW, { calls: true, emails: true }, ROSTER,
   );
   const today = snap.reps[REP].periods.today;
   const book = snap.reps[REP].book;
@@ -125,7 +131,7 @@ describe("aggregate", () => {
   it("marks a GD tapped when activity is present on any company-level rooftop", () => {
     const gdOnly = aggregate(
       [act({ type: "email", companyIds: ["G2"], timestampMs: NOW - 10 * DAY_MS })],
-      { G2: "Group B" }, {}, contactMeta, owned, ctx, NOW, { calls: true, emails: true },
+      { G2: "Group B" }, {}, contactMeta, owned, ctx, NOW, { calls: true, emails: true }, ROSTER,
     ).reps[REP].book;
 
     const gd = gdOnly.units.find((u) => u.key === "gd:900")!;
@@ -190,7 +196,7 @@ describe("aggregate", () => {
     );
     const snap2 = aggregate(
       [...activities, ...many],
-      { X: "Acme" }, {}, contactMeta, owned, ctx, NOW, { calls: true, emails: true },
+      { X: "Acme" }, {}, contactMeta, owned, ctx, NOW, { calls: true, emails: true }, ROSTER,
     );
     const roof = snap2.reps[REP].book.units.find((u) => u.key === "single:X")!.rooftops[0];
     expect(roof.contacts[0].id).toBe("P6"); // 6 touches, most engaged
@@ -220,7 +226,7 @@ describe("temperature engine v2 (outcome-driven)", () => {
 
   /** Run aggregate over some activities and return today's company_breakdown keyed by id. */
   function tempOf(activities: Activity[]): Record<string, { temp: string; reason: string; disqualified: boolean }> {
-    const snap = aggregate(activities, {}, {}, {}, {}, ctx, NOW, { calls: true, emails: true });
+    const snap = aggregate(activities, {}, {}, {}, {}, ctx, NOW, { calls: true, emails: true }, ROSTER);
     const rows = snap.reps[REP].periods.today.company_breakdown ?? [];
     return Object.fromEntries(rows.map((r) => [r.id, { temp: r.temp, reason: r.temp_reason, disqualified: r.disqualified }]));
   }
@@ -275,7 +281,7 @@ describe("owner != activity-doer coverage", () => {
     const owned = { [OWNER]: [own({ id: "W", name: "Westside Auto", gdStage: "Prospect", segment: "mm_single" })] };
     const snap = aggregate(
       [act({ ownerId: TEAMMATE, type: "call", disposition: CONNECTED, contactIds: ["Z"], companyIds: ["W"] })],
-      { W: "Westside Auto" }, {}, { Z: { name: "Zed", title: "GM", dm: true } }, owned, ctx, NOW, { calls: true, emails: true },
+      { W: "Westside Auto" }, {}, { Z: { name: "Zed", title: "GM", dm: true } }, owned, ctx, NOW, { calls: true, emails: true }, ROSTER,
     );
     const book = snap.reps[OWNER].book;
     expect(book.units_tapped).toBe(1); // owner's book shows it worked
@@ -298,7 +304,7 @@ describe("monthly new-unique (owned book)", () => {
       act({ ownerId: OWNER, companyIds: ["X"], contactIds: ["c1"], timestampMs: NOW }), // X again this month (not new)
       act({ ownerId: OWNER, companyIds: ["Y"], contactIds: ["c2"], timestampMs: NOW }), // Y first worked this month (new)
     ],
-    { X: "Xco", Y: "Yco" }, {}, {}, owned, ctx, NOW, { calls: true, emails: true },
+    { X: "Xco", Y: "Yco" }, {}, {}, owned, ctx, NOW, { calls: true, emails: true }, ROSTER,
   );
   const monthly = snap.reps[OWNER].monthly;
 

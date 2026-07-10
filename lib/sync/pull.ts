@@ -8,7 +8,7 @@
  */
 
 import { hubspotPost, hubspotGet, RATE_LIMIT_DELAY_MS, delay } from "../hubspot/client";
-import { REP_OWNER_IDS } from "../../config/reps";
+import { getTrackedOwnerIds } from "../team/load";
 import { ActivityType } from "./types";
 
 const DAY_MS = 86_400_000;
@@ -66,7 +66,7 @@ const EMAIL_CONFIG: PullConfig = {
   ],
 };
 
-async function pullSlice(cfg: PullConfig, startMs: number, endMs: number): Promise<HsRecord[]> {
+async function pullSlice(cfg: PullConfig, startMs: number, endMs: number, ownerIds: string[]): Promise<HsRecord[]> {
   const collected: HsRecord[] = [];
   let after: string | undefined;
 
@@ -75,7 +75,7 @@ async function pullSlice(cfg: PullConfig, startMs: number, endMs: number): Promi
       filterGroups: [
         {
           filters: [
-            { propertyName: "hubspot_owner_id", operator: "IN", values: REP_OWNER_IDS },
+            { propertyName: "hubspot_owner_id", operator: "IN", values: ownerIds },
             { propertyName: cfg.directionProperty, operator: "EQ", value: cfg.directionValue },
             { propertyName: "hs_timestamp", operator: "GTE", value: String(startMs) },
             { propertyName: "hs_timestamp", operator: "LT", value: String(endMs) },
@@ -97,13 +97,13 @@ async function pullSlice(cfg: PullConfig, startMs: number, endMs: number): Promi
   return collected;
 }
 
-async function pullObject(cfg: PullConfig, windowStartMs: number, nowMs: number): Promise<HsRecord[]> {
+async function pullObject(cfg: PullConfig, windowStartMs: number, nowMs: number, ownerIds: string[]): Promise<HsRecord[]> {
   const all: HsRecord[] = [];
   const seen = new Set<string>();
 
   for (let sliceStart = windowStartMs; sliceStart < nowMs; sliceStart += SLICE_MS) {
     const sliceEnd = Math.min(sliceStart + SLICE_MS, nowMs);
-    const records = await pullSlice(cfg, sliceStart, sliceEnd);
+    const records = await pullSlice(cfg, sliceStart, sliceEnd, ownerIds);
 
     let added = 0;
     for (const r of records) {
@@ -168,11 +168,12 @@ export interface OwnedCompany {
  * denominator. Searched per-owner so no single query approaches the 10k ceiling,
  * and names come back in the search (no separate name lookup needed).
  */
-export async function pullOwnedCompanies(): Promise<Record<string, OwnedCompany[]>> {
+export async function pullOwnedCompanies(ownerIdsOverride?: string[]): Promise<Record<string, OwnedCompany[]>> {
   const out: Record<string, OwnedCompany[]> = {};
+  const ownerIds = ownerIdsOverride ?? await getTrackedOwnerIds();
   console.log("Pulling owned-company books (coverage denominator)…");
 
-  for (const ownerId of REP_OWNER_IDS) {
+  for (const ownerId of ownerIds) {
     const companies: OwnedCompany[] = [];
     let after: string | undefined;
     do {
@@ -211,7 +212,7 @@ export async function pullOwnedCompanies(): Promise<Record<string, OwnedCompany[
   }
 
   const total = Object.values(out).reduce((a, c) => a + c.length, 0);
-  console.log(`  owned companies: ${total} across ${REP_OWNER_IDS.length} reps.`);
+  console.log(`  owned companies: ${total} across ${ownerIds.length} reps.`);
   return out;
 }
 
@@ -269,19 +270,21 @@ export async function pullActivities(
   windowStartMs: number,
   nowMs: number,
   caps: PullCaps,
+  ownerIdsOverride?: string[],
 ): Promise<RawActivity[]> {
   let calls: HsRecord[] = [];
   let emails: HsRecord[] = [];
 
+  const ownerIds = ownerIdsOverride ?? await getTrackedOwnerIds();
   if (caps.calls) {
     console.log("Pulling outbound calls…");
-    calls = await pullObject(CALL_CONFIG, windowStartMs, nowMs);
+    calls = await pullObject(CALL_CONFIG, windowStartMs, nowMs, ownerIds);
   } else {
     console.warn("Skipping calls — no read access.");
   }
   if (caps.emails) {
     console.log("Pulling outgoing emails…");
-    emails = await pullObject(EMAIL_CONFIG, windowStartMs, nowMs);
+    emails = await pullObject(EMAIL_CONFIG, windowStartMs, nowMs, ownerIds);
   } else {
     console.warn("Skipping emails — no read access (scope: connected-email-data-access).");
   }
@@ -302,13 +305,14 @@ async function pullModifiedSlice(
   extraFilters: object[],
   properties: string[],
   sinceMs: number,
+  ownerIds: string[],
 ): Promise<{ records: HsRecord[]; sawCeiling: boolean }> {
   const collected: HsRecord[] = [];
   let after: string | undefined;
   do {
     const body: Record<string, unknown> = {
       filterGroups: [{ filters: [
-        { propertyName: "hubspot_owner_id", operator: "IN", values: REP_OWNER_IDS },
+        { propertyName: "hubspot_owner_id", operator: "IN", values: ownerIds },
         ...extraFilters,
         { propertyName: "hs_lastmodifieddate", operator: "GT", value: String(sinceMs) },
       ] }],
@@ -336,11 +340,12 @@ async function pullModifiedWithResume(
   extraFilters: object[],
   properties: string[],
   sinceMs: number,
+  ownerIds: string[],
   onRecord: (r: HsRecord) => void,
 ): Promise<void> {
   let cursor = sinceMs;
   for (let window = 1; ; window++) {
-    const { records, sawCeiling } = await pullModifiedSlice(objectType, extraFilters, properties, cursor);
+    const { records, sawCeiling } = await pullModifiedSlice(objectType, extraFilters, properties, cursor, ownerIds);
     for (const r of records) onRecord(r);
     if (!sawCeiling) return;
     if (window >= MAX_RESUME_WINDOWS) {
@@ -366,11 +371,12 @@ export async function pullChangedActivities(
 ): Promise<RawActivity[]> {
   const out: HsRecord[] = [];
   const seen = new Set<string>();
+  const ownerIds = await getTrackedOwnerIds();
   const collect = (r: HsRecord) => { if (!seen.has(r.id)) { seen.add(r.id); out.push(r); } };
   const run = (cfg: PullConfig, since: number) => pullModifiedWithResume(
     cfg.objectType,
     [{ propertyName: cfg.directionProperty, operator: "EQ", value: cfg.directionValue }],
-    cfg.properties, since, collect,
+    cfg.properties, since, ownerIds, collect,
   );
   if (caps.calls) await run(CALL_CONFIG, sinceCallsMs);
   if (caps.emails) await run(EMAIL_CONFIG, sinceEmailsMs);
@@ -386,7 +392,8 @@ const COMPANY_DELTA_PROPERTIES = [
  *  Boundary re-reads can duplicate records — the store's in-batch last-wins dedupe absorbs them. */
 export async function pullChangedCompanies(sinceMs: number): Promise<(OwnedCompany & { ownerId: string; lastModifiedMs: number })[]> {
   const out: (OwnedCompany & { ownerId: string; lastModifiedMs: number })[] = [];
-  await pullModifiedWithResume("companies", [], COMPANY_DELTA_PROPERTIES, sinceMs, (r) => {
+  const ownerIds = await getTrackedOwnerIds();
+  await pullModifiedWithResume("companies", [], COMPANY_DELTA_PROPERTIES, sinceMs, ownerIds, (r) => {
     out.push({
       id: r.id, name: r.properties.name?.trim() || `Company ${r.id}`,
       gdStage: r.properties.lifecycle_stage_gd_level?.trim() || null,

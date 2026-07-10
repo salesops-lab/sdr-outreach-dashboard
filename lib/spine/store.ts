@@ -6,7 +6,6 @@ import { OwnedCompany } from "../sync/pull";
 import { ContactMeta } from "../sync/associate";
 import { ActivityRow, CompanyRow, ContactRow, OwnerRow, TeamMemberRow, TeamRow } from "./types";
 import { rowToActivity, rowToContactMeta, rowToOwnedCompany } from "./rows";
-import { REP_OWNER_IDS } from "../../config/reps";
 import { Activity } from "../sync/types";
 
 const BATCH = 500;
@@ -147,7 +146,7 @@ export interface StoreForAggregate {
   ownedCompanies: Record<string, OwnedCompany[]>;
 }
 
-export async function loadStoreForAggregate(anchorMs: number): Promise<StoreForAggregate> {
+export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]): Promise<StoreForAggregate> {
   const actRows = await fetchAll<ActivityRow>("sdr_activities",
     "hs_id,type,owner_id,ts_ms,disposition,email_status,email_opened,email_replied,email_clicked,contact_ids,company_ids",
     ["ts_ms", "hs_id"], (q) => q.gte("ts_ms", anchorMs));
@@ -158,7 +157,7 @@ export async function loadStoreForAggregate(anchorMs: number): Promise<StoreForA
   const companyNames: Record<string, string> = {};
   const companyGdStage: Record<string, string | null> = {};
   const ownedCompanies: Record<string, OwnedCompany[]> = {};
-  for (const id of REP_OWNER_IDS) ownedCompanies[id] = [];
+  for (const id of ownerIds) ownedCompanies[id] = [];
   for (const r of coRows) {
     companyNames[r.hs_id] = r.name?.trim() || `Company ${r.hs_id}`;
     companyGdStage[r.hs_id] = r.gd_stage;

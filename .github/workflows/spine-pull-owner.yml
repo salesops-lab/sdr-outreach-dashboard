@@ -1,0 +1,27 @@
+name: Spine single-owner pull
+on:
+  workflow_dispatch:
+    inputs:
+      owner_id:
+        description: HubSpot owner id to backfill (full history for one new user)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency: spine-sync
+jobs:
+  pull-owner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }  # 22+: supabase-js needs a global WebSocket (absent on Node 20)
+      - run: npm ci
+      # owner_id passed via env (never interpolated into the shell) + validated numeric in the script.
+      - run: npm run pull:owner
+        env:
+          OWNER_ID: ${{ inputs.owner_id }}
+          HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

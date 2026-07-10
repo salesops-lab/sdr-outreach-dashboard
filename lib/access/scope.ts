@@ -1,15 +1,17 @@
 /** Pure scope decision (focus model: org view stays available to all) — unit-tested.
- *  Three layers from config/team-structure: SDR → AE pod → Manager (with TLs rolling up).
- *  AE pod layer now includes both AEs and SDRs (via allOwnersInPod).
- *  Lives apart from resolve.ts so tests can import it without the server-only guard. */
+ *  Three layers from a TeamStructure: SDR → AE pod → Manager (with TLs rolling up).
+ *  AE pod layer includes both AEs and SDRs (via allOwnersInPod). The structure is passed in
+ *  (loaded from DB by resolve.ts, or the config fallback) so this file stays pure + testable. */
 import { Role, Viewer } from "../spine/types";
-import { podByEmail, allOwnersInPod, managerKeyByOwnerId, sdrOwnersUnderManager } from "../../config/team-structure";
+import { TeamStructure } from "../team/types";
+import { podByEmail, allOwnersInPod, managerKeyByOwnerId, sdrOwnersUnderManager } from "../team/helpers";
 
 export function decideScope(
   email: string,
   roleRow: { role: string; team_id: string | null } | null,
   trackedOwnerId: string | null,
   allTracked: string[],
+  ts: TeamStructure,
 ): Viewer {
   // Explicit admin/leadership (sdr_roles) see everyone, with admin tools.
   if (roleRow?.role === "admin" || roleRow?.role === "leadership") {
@@ -17,16 +19,16 @@ export function decideScope(
   }
 
   // AE pod (middle layer), by login email → default to the pod's SDRs + AEs.
-  const pod = podByEmail(email);
+  const pod = podByEmail(ts, email);
   if (pod) {
-    const scope = allOwnersInPod(pod).filter((id) => allTracked.includes(id));
+    const scope = allOwnersInPod(ts, pod).filter((id) => allTracked.includes(id));
     if (scope.length) return { email, role: "manager", defaultOwnerIds: scope, isAdmin: false };
   }
 
   // Manager / TL (player-coach), by owner id → their whole subtree (incl. child TLs) + self.
-  const mgr = managerKeyByOwnerId(trackedOwnerId);
+  const mgr = managerKeyByOwnerId(ts, trackedOwnerId);
   if (mgr) {
-    const scope = sdrOwnersUnderManager(mgr).filter((id) => allTracked.includes(id));
+    const scope = sdrOwnersUnderManager(ts, mgr).filter((id) => allTracked.includes(id));
     if (trackedOwnerId && allTracked.includes(trackedOwnerId) && !scope.includes(trackedOwnerId)) scope.push(trackedOwnerId);
     if (scope.length) return { email, role: "manager", defaultOwnerIds: scope, isAdmin: false };
   }

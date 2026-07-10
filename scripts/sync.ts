@@ -19,6 +19,8 @@ import { COVERAGE_ANCHOR } from "../config/hubspot";
 import { pullActivities, pullOwnedCompanies } from "../lib/sync/pull";
 import { resolveAssociations } from "../lib/sync/associate";
 import { aggregate } from "../lib/sync/aggregate";
+import { configTeamStructure } from "../lib/team/config-source";
+import { trackedOwnerIds, nameMap } from "../lib/team/helpers";
 
 interface PropertyDef {
   name: string;
@@ -104,7 +106,9 @@ async function main(): Promise<void> {
     console.warn("Could not pull owned companies (coverage will be empty):", err instanceof Error ? err.message : err);
   }
 
-  const snapshot = aggregate(activities, companyNames, companyGdStage, contactMeta, ownedCompanies, ctx, Date.now(), caps);
+  const cfgTs = configTeamStructure(); // legacy file-snapshot path: config roster (retired script)
+  const snapshot = aggregate(activities, companyNames, companyGdStage, contactMeta, ownedCompanies, ctx, Date.now(), caps,
+    { ownerIds: trackedOwnerIds(cfgTs), names: nameMap(cfgTs) });
 
   const json = JSON.stringify(snapshot, null, 2);
   const outPath = path.join(process.cwd(), "data", "snapshot.json");

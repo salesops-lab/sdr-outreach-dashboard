@@ -10,6 +10,8 @@ import {
   pullOwnersTeams, PullCaps, RawActivity,
 } from "../sync/pull";
 import { activityToRow, nextWatermark } from "./rows";
+import { loadTeamStructure } from "../team/load";
+import { nameMap, trackedOwnerIds } from "../team/helpers";
 import {
   getWatermark, loadStoreForAggregate, reconcileOwnedCompanies, replaceOwnersTeams,
   saveSnapshot, setSyncState, tryLock, unlock, upsertActivities, upsertCompanies, upsertContacts,
@@ -88,14 +90,18 @@ async function persistResolved(raw: RawActivity[]) {
  *  overwrite the good snapshot row (which outranks the file fallback) with nothing.
  *  Backfill passes false: it is the run that legitimately populates an empty spine. */
 export async function reaggregate(caps: PullCaps, expectData: boolean) {
-  const store = await loadStoreForAggregate(anchorMs());
+  // Tracked roster is DB-backed (config fallback). Load once and share with the store read + the
+  // aggregate so both use the same owner set within this run.
+  const ts = await loadTeamStructure();
+  const ownerIds = trackedOwnerIds(ts);
+  const store = await loadStoreForAggregate(anchorMs(), ownerIds);
   if (expectData && store.activities.length === 0) {
     throw new Error("[spine] aggregate guard: spine returned 0 activities when data was expected — " +
       "refusing to overwrite the snapshot (check COVERAGE_ANCHOR and the store read).");
   }
   const ctx = makeEtContext(Date.now());
   const snap = aggregate(store.activities, store.companyNames, store.companyGdStage,
-    store.contactMeta, store.ownedCompanies, ctx, Date.now(), caps);
+    store.contactMeta, store.ownedCompanies, ctx, Date.now(), caps, { ownerIds, names: nameMap(ts) });
   const sizeMb = Buffer.byteLength(JSON.stringify(snap)) / 1_048_576;
   console.log(`[spine] snapshot ${sizeMb.toFixed(2)} MB (${store.activities.length} activities)`);
   await saveSnapshot(snap);
@@ -167,6 +173,33 @@ export async function runBackfill(caps: PullCaps) {
     for (const k of ["calls", "emails", "companies"]) await setSyncState(k, { watermark_ms: wm });
     await setSyncState("lock", { last_duration_ms: Date.now() - t0, notes: "backfill ok" });
     console.log(`[backfill] done in ${((Date.now() - t0) / 60000).toFixed(1)}m — snapshot totals: ${totals.calls} calls / ${totals.emails} emails.`);
+  } finally {
+    await unlock(lease);
+  }
+}
+
+/** Targeted full-history pull for ONE owner — used when an admin adds a new user (a delta only
+ *  catches recently-modified rows, so a new owner needs a history pull). Scoped to the single
+ *  owner: uses upsertCompanies (never the global reconcile, which would clear other owners). */
+export async function runOwnerBackfill(ownerId: string, caps?: PullCaps) {
+  caps ??= await preflightCaps();
+  const lease = await tryLock(60);
+  if (!lease) { console.log("[owner-backfill] another run holds the lock — exiting."); return; }
+  const t0 = Date.now();
+  try {
+    console.log(`[owner-backfill] full history pull for owner ${ownerId} from ${COVERAGE_ANCHOR}…`);
+    const raw = await pullActivities(anchorMs(), Date.now(), caps, [ownerId]);
+    if (raw.length) await persistResolved(raw);
+    const books = await pullOwnedCompanies([ownerId]);
+    const rows = Object.entries(books).flatMap(([oid, cos]) => cos.map((c) => ({
+      hs_id: c.id, name: c.name, gd_stage: c.gdStage, owner_id: oid, gd_id: c.gdId,
+      is_group: c.isGroup, group_name: c.groupName, segment: c.segment, dealership_type: c.dealershipType,
+    })));
+    if (rows.length) await upsertCompanies(rows);
+    await refreshOwnersTeams();
+    await reaggregate(caps, true);
+    await setSyncState("lock", { last_duration_ms: Date.now() - t0, notes: `owner-backfill ok (${ownerId}): ${raw.length} activities, ${rows.length} companies` });
+    console.log(`[owner-backfill] done in ${((Date.now() - t0) / 1000).toFixed(1)}s — ${raw.length} activities, ${rows.length} companies for ${ownerId}.`);
   } finally {
     await unlock(lease);
   }

@@ -158,6 +158,51 @@ end;
 $$;
 grant execute on function sdr_save_snapshot(jsonb) to service_role;
 
+-- ── Team management (admin-editable roster + org structure) ─────────────────
+-- Source of truth for WHO is tracked and HOW they roll up, replacing the hard-coded
+-- config/reps.ts + config/team-structure.ts. The sync pull-filter, aggregation, and RBAC
+-- scope all read these; if a table is empty or unreachable they fall back to the config
+-- files (so the app never breaks mid-migration). Seed from config with `npm run team:seed`.
+
+-- AE pods (middle layer). lead_email drives an AE pod lead's default scope (sees the pod).
+create table if not exists sdr_pods (
+  pod_key    text primary key,            -- e.g. 'saarthak'
+  name       text not null,
+  lead_email text,                         -- pod lead login email (null = shared pool, no lead)
+  active     boolean not null default true,
+  sort       integer not null default 0,
+  updated_at timestamptz not null default now(),
+  check (lead_email is null or lead_email = lower(lead_email))
+);
+
+-- Managers / TLs (player-coaches). parent_key: a TL rolls up to its parent manager (self-ref).
+create table if not exists sdr_managers (
+  manager_key text primary key,            -- e.g. 'vaibhav', 'shikhar'
+  name        text not null,
+  owner_id    text,                         -- the player-coach's own HubSpot owner id (nullable)
+  parent_key  text,                         -- TL → parent manager key (nullable)
+  active      boolean not null default true,
+  updated_at  timestamptz not null default now()
+);
+
+-- The tracked roster: every SDR/AE on the dashboard + the HubSpot pull filter.
+-- active=false is a soft-delete: drops from the pull + dashboard, keeps historical spine data.
+create table if not exists sdr_roster (
+  owner_id    text primary key,            -- HubSpot owner id (must exist in sdr_owners)
+  email       text,
+  first_name  text,
+  last_name   text,
+  name        text,                         -- display fallback ("First Last")
+  kind        text not null default 'sdr' check (kind in ('sdr','ae')),
+  ae_pod      text,                         -- → sdr_pods.pod_key (nullable)
+  manager_key text,                         -- → sdr_managers.manager_key (SDRs; null for AEs)
+  active      boolean not null default true,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists idx_sdr_roster_active on sdr_roster(active);
+create index if not exists idx_sdr_roster_email on sdr_roster(lower(email));
+
 -- Seeds (idempotent)
 insert into sdr_sync_state(key) values ('calls'),('emails'),('companies'),('owners'),('lock'),('agent')
   on conflict (key) do nothing;
@@ -178,7 +223,8 @@ declare t text;
 begin
   foreach t in array array['sdr_activities','sdr_companies','sdr_contacts','sdr_owners',
                            'sdr_teams','sdr_team_members','sdr_roles','sdr_sync_state','sdr_snapshots',
-                           'sdr_activity_content','sdr_agent_watches','sdr_agent_notes']
+                           'sdr_activity_content','sdr_agent_watches','sdr_agent_notes',
+                           'sdr_pods','sdr_managers','sdr_roster']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists %I on %I', t || '_spyne_select', t);
