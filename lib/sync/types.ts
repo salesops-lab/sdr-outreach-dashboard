@@ -2,6 +2,8 @@
 import { DealStageKey } from "../../config/deal-stages";
 import { DemoStatus } from "./segmentation";
 import { DealHealth } from "./deal-health";
+export type { DemoStatus } from "./segmentation";
+export type { DealHealth } from "./deal-health";
 
 export const PERIOD_KEYS = [
   "today",

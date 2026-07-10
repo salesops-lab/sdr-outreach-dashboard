@@ -69,6 +69,7 @@ export interface Viewer {
   /** The viewer's DEFAULT scope (focus model — org view remains available to all). */
   defaultOwnerIds: string[];
   isAdmin: boolean; // admin OR leadership → /admin access
+  kind?: "sdr" | "ae" | null; // the login's rep type (null if not a tracked rep) — defaults the Accounts view
 }
 
 export type { Activity };

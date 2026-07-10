@@ -7,8 +7,8 @@ import {
   BookCoverage, CoverageDim, CompanyBreakdownRow, MonthMetrics,
 } from "../lib/sync/types";
 import {
-  Activity, Users, Building2, Gauge, PhoneCall, CalendarCheck, Flame, Phone, Mail, Download, ShieldCheck,
-  AlertTriangle, ExternalLink,
+  Activity, Users, Building2, Gauge, PhoneCall, CalendarCheck, Flame, Phone, Mail, Download,
+  AlertTriangle, ExternalLink, ChevronRight, Target, CalendarClock, CheckCircle2,
 } from "lucide-react";
 import { CONNECTED_DISPOSITIONS } from "../config/dispositions";
 import { companyUrl } from "../config/hubspot";
@@ -16,9 +16,9 @@ import { CoachingSnapshot } from "../lib/callquality/types";
 import { Viewer } from "../lib/spine/types";
 import RepDrawer from "./RepDrawer";
 import GdExplorer from "./GdExplorer";
-import LogoutButton from "./LogoutButton";
+import AppNav from "./AppNav";
 import { STAGE_CHIP } from "./ui-tokens";
-import { Surface, SectionTitle, StatTile, Chip, Bar, Avatar, GradeBadge, SortHeader, TEMP_META, cn } from "./ui";
+import { Surface, SectionTitle, StatTile, Bar, Avatar, GradeBadge, SortHeader, Segmented, TEMP_META, cn } from "./ui";
 import { RooftopsTable, RooftopNode } from "./AccountsTable";
 
 // Literal temperature color classes so Tailwind's JIT keeps them (dynamic `text-${k}` would be purged).
@@ -55,13 +55,18 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
   const scoped = viewer.defaultOwnerIds.length > 0 && viewer.defaultOwnerIds.length < Object.keys(snapshot.reps).length;
   const [scopeMode, setScopeMode] = useState<"mine" | "all">(scoped ? "mine" : "all");
 
+  // SDR/AE lens — only managers/admins pivot the whole board between the two rep types.
+  const canToggleKind = viewer.isAdmin || viewer.role === "manager" || viewer.role === "leadership";
+  const [kindMode, setKindMode] = useState<"all" | "sdr" | "ae">("all");
+
   const allRows = useMemo<Row[]>(() =>
     Object.entries(snapshot.reps)
       .filter(([id]) => scopeMode === "all" || viewer.defaultOwnerIds.includes(id))
+      .filter(([id]) => kindMode === "all" || (snapshot.owner_kinds[id] ?? "sdr") === kindMode)
       .map(([ownerId, data]) => {
         const m = data.periods[period];
         return { ownerId, name: snapshot.owner_names[ownerId] ?? `ID:${ownerId}`, data, m, touches: m.calls.total + m.emails.sent };
-      }), [snapshot, period, scopeMode, viewer]);
+      }), [snapshot, period, scopeMode, kindMode, viewer]);
 
   const rows = useMemo<Row[]>(() => {
     const filtered = repFilter === "all" ? allRows : allRows.filter((r) => r.ownerId === repFilter);
@@ -78,11 +83,12 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
   }, [allRows, repFilter, sortKey, sortDir]);
 
   const summary = useMemo(() => {
-    const a = { touches: 0, contacts: 0, companies: 0, calls: 0, connected: 0, denom: 0, meetings: 0, unitsTapped: 0, unitsTotal: 0, hot: 0, active: 0 };
+    const a = { touches: 0, contacts: 0, companies: 0, calls: 0, connected: 0, denom: 0, meetings: 0, unitsTapped: 0, unitsTotal: 0, hot: 0, active: 0, pending: 0, scheduled: 0, done: 0, atRisk: 0 };
     for (const r of rows) {
       a.touches += r.touches; a.contacts += r.m.contacts.total; a.companies += r.m.companies.total;
       a.calls += r.m.calls.total; a.connected += r.m.calls.connected; a.denom += r.m.calls.connected + r.m.calls.not_connected;
       a.meetings += r.m.meetings_booked; a.unitsTapped += r.data.book.units_tapped; a.unitsTotal += r.data.book.units_total; a.hot += r.m.temp.hot;
+      a.pending += r.data.funnel.demo_pending; a.scheduled += r.data.funnel.demo_scheduled; a.done += r.data.funnel.demo_done; a.atRisk += r.data.funnel.scheduled_at_risk;
       if (r.touches > 0) a.active++;
     }
     return { ...a, emails: a.touches - a.calls, connectRate: a.denom ? a.connected / a.denom : 0, coverage: a.unitsTotal ? a.unitsTapped / a.unitsTotal : 0 };
@@ -103,7 +109,9 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
   const hasData = !!snapshot.generated_at_utc;
 
   return (
-    <main className="mx-auto max-w-[1500px] px-4 py-7 sm:px-6">
+    <>
+      <AppNav active="overview" viewer={viewer} />
+      <main className="mx-auto max-w-[1500px] px-4 py-7 sm:px-6">
       <header className="mb-7 flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-3">
           <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary text-primary-fg shadow-card">
@@ -115,12 +123,6 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
           </div>
         </div>
         <div className="flex flex-col items-end gap-1.5 text-right text-xs text-ink-muted">
-          <div className="flex items-center gap-2">
-            <Chip tone="primary" className="uppercase tracking-wide"><ShieldCheck className="h-3 w-3" />{viewer.role}</Chip>
-            <a href="/attention" className="inline-flex items-center gap-1 font-semibold text-hot hover:underline"><Flame className="h-3 w-3" />Attention</a>
-            {viewer.isAdmin && <a href="/admin" className="font-semibold text-primary hover:underline">Admin</a>}
-            <LogoutButton />
-          </div>
           <div>Refreshed <span className="font-semibold text-ink">{etStamp(snapshot.generated_at_utc)}</span></div>
           <div className="tabular-nums">{snapshot.window.start_et || "—"} → {snapshot.window.end_et || "—"} · {fmt(snapshot.totals.calls)} calls + {fmt(snapshot.totals.emails)} emails</div>
         </div>
@@ -139,6 +141,13 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
             options={[["mine", viewer.role === "rep" ? "My data" : "My team"], ["all", "All reps"]]}
             value={scopeMode}
             onChange={(v) => { setScopeMode(v as "mine" | "all"); setRepFilter("all"); }}
+          />
+        )}
+        {canToggleKind && (
+          <Segmented
+            options={[["all", "All"], ["sdr", "SDRs"], ["ae", "AEs"]]}
+            value={kindMode}
+            onChange={(v) => { setKindMode(v as "all" | "sdr" | "ae"); setRepFilter("all"); }}
           />
         )}
         <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)} className="rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink-muted shadow-card outline-none focus:ring-2 focus:ring-primary/30">
@@ -162,6 +171,8 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
         <StatTile label="Meetings" value={fmt(summary.meetings)} icon={CalendarCheck} accent="good"
           sub={<span className="inline-flex items-center gap-1"><Flame className="h-3 w-3 text-hot" />{fmt(summary.hot)} hot accounts</span>} />
       </div>
+
+      <FunnelStrip pending={summary.pending} scheduled={summary.scheduled} done={summary.done} atRisk={summary.atRisk} lens={kindMode} />
 
       <Surface className="overflow-hidden">
         <div className="scroll-x">
@@ -206,25 +217,58 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
           </RepDrawer>
         ) : null;
       })()}
-    </main>
+      </main>
+    </>
   );
 }
 
-/* ------------------------------------------------------------------ Home controls */
+/* ------------------------------------------------------------------ Demo funnel strip */
 
-function Segmented({ options, value, onChange, tone = "primary" }: {
-  options: [string, string][]; value: string; onChange: (v: string) => void; tone?: "primary" | "good";
+const FUNNEL_TINT: Record<string, { text: string; bg: string; ring: string }> = {
+  primary: { text: "text-primary", bg: "bg-primary-weak", ring: "ring-primary/15" },
+  warm: { text: "text-warm", bg: "bg-warm-weak", ring: "ring-warm/25" },
+  good: { text: "text-good", bg: "bg-good-weak", ring: "ring-good/25" },
+};
+
+/** Lead→demo funnel over the (filtered) owned book: Demo Pending → Scheduled → Done. */
+function FunnelStrip({ pending, scheduled, done, atRisk, lens }: {
+  pending: number; scheduled: number; done: number; atRisk: number; lens: "all" | "sdr" | "ae";
 }) {
-  const active = tone === "good" ? "bg-good text-white shadow-sm" : "bg-primary text-primary-fg shadow-sm";
+  const total = pending + scheduled + done;
+  const seg = [
+    { key: "pending", label: "Demo Pending", n: pending, icon: Target, tint: "primary", caption: "Target list — no demo booked" },
+    { key: "scheduled", label: "Demo Scheduled", n: scheduled, icon: CalendarClock, tint: "warm", caption: atRisk > 0 ? `${fmt(atRisk)} at risk · no-show/slipped` : "Booked, not yet held" },
+    { key: "done", label: "Demo Done", n: done, icon: CheckCircle2, tint: "good", caption: "Held — in the AE motion" },
+  ] as const;
   return (
-    <div className="flex flex-wrap gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
-      {options.map(([v, label]) => (
-        <button key={v} onClick={() => onChange(v)}
-          className={cn("rounded-lg px-3 py-1.5 text-sm font-medium transition", value === v ? active : "text-ink-muted hover:bg-surface-muted hover:text-ink")}>
-          {label}
-        </button>
-      ))}
-    </div>
+    <Surface className="mb-6 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <SectionTitle>Demo funnel · owned book</SectionTitle>
+        <span className="text-[11px] tabular-nums text-ink-subtle">{fmt(total)} accounts</span>
+      </div>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+        {seg.map((s, i) => {
+          const t = FUNNEL_TINT[s.tint];
+          const Icon = s.icon;
+          return (
+            <div key={s.key} className="flex flex-1 items-stretch gap-2">
+              <a href={`/accounts?lens=${lens}&bucket=${s.key}`}
+                className={cn("group flex flex-1 items-center gap-3 rounded-card p-3 ring-1 transition hover:shadow-card", t.bg, t.ring)}>
+                <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface/70", t.text)}>
+                  <Icon className="h-4 w-4" strokeWidth={2.2} />
+                </span>
+                <div className="min-w-0">
+                  <div className={cn("font-mono text-[22px] font-bold leading-none tabular-nums", t.text)}>{fmt(s.n)}</div>
+                  <div className="mt-1 text-xs font-semibold text-ink">{s.label}</div>
+                  <div className="truncate text-[10.5px] text-ink-subtle">{s.caption}</div>
+                </div>
+              </a>
+              {i < seg.length - 1 && <ChevronRight className="hidden h-4 w-4 shrink-0 self-center text-ink-subtle sm:block" />}
+            </div>
+          );
+        })}
+      </div>
+    </Surface>
   );
 }
 

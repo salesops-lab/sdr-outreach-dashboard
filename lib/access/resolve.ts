@@ -4,6 +4,7 @@
  *  fallback; the pure decision lives in ./scope (unit-tested). */
 import { supabaseAdmin } from "../supabase/admin";
 import { loadTeamStructure } from "../team/load";
+import { kindMap } from "../team/helpers";
 import { Viewer } from "../spine/types";
 import { decideScope } from "./scope";
 
@@ -11,7 +12,7 @@ import { decideScope } from "./scope";
 export async function resolveViewer(email: string): Promise<Viewer> {
   const ts = await loadTeamStructure();
   const allTracked = ts.members.filter((m) => m.active).map((m) => m.ownerId);
-  const fallback: Viewer = { email, role: "viewer", defaultOwnerIds: allTracked, isAdmin: false };
+  const fallback: Viewer = { email, role: "viewer", defaultOwnerIds: allTracked, isAdmin: false, kind: null };
   const sb = supabaseAdmin();
   if (!sb) return fallback;
   try {
@@ -24,7 +25,10 @@ export async function resolveViewer(email: string): Promise<Viewer> {
     let trackedOwnerId: string | null = null;
     const { data: owner } = await sb.from("sdr_owners").select("owner_id").eq("email", lower).maybeSingle();
     if (owner && allTracked.includes(owner.owner_id)) trackedOwnerId = owner.owner_id;
-    return decideScope(email, roleRow ?? null, trackedOwnerId, allTracked, ts);
+    const viewer = decideScope(email, roleRow ?? null, trackedOwnerId, allTracked, ts);
+    // Attach the login's own rep type (SDR/AE) for defaulting the Accounts view; kept off the pure
+    // decideScope so its scope unit tests stay shape-stable.
+    return { ...viewer, kind: trackedOwnerId ? (kindMap(ts)[trackedOwnerId] ?? null) : null };
   } catch (err) {
     console.error("[access] resolveViewer failed:", err);
     return fallback;

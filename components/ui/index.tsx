@@ -189,3 +189,40 @@ export function SortHeader({
     </th>
   );
 }
+
+/* ------------------------------------------------------------------ Segmented toggle */
+
+export function Segmented({ options, value, onChange, tone = "primary" }: {
+  options: [string, string][]; value: string; onChange: (v: string) => void; tone?: "primary" | "good";
+}) {
+  const active = tone === "good" ? "bg-good text-white shadow-sm" : "bg-primary text-primary-fg shadow-sm";
+  return (
+    <div className="flex flex-wrap gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
+      {options.map(([v, label]) => (
+        <button key={v} onClick={() => onChange(v)}
+          className={cn("rounded-lg px-3 py-1.5 text-sm font-medium transition", value === v ? active : "text-ink-muted hover:bg-surface-muted hover:text-ink")}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ Deal Health badge */
+
+const HEALTH_META: Record<"green" | "yellow" | "red", { label: string; dot: string; cls: string }> = {
+  green: { label: "Healthy", dot: "bg-good", cls: "bg-good-weak text-good ring-good/20" },
+  yellow: { label: "At risk", dot: "bg-warm", cls: "bg-warm-weak text-warm ring-warm/25" },
+  red: { label: "Critical", dot: "bg-danger", cls: "bg-danger-weak text-danger ring-danger/20" },
+};
+
+/** Green/Yellow/Red pill for a live deal's health (the demo→closure indicator). */
+export function DealHealthBadge({ health, title }: { health: "green" | "yellow" | "red"; title?: string }) {
+  const m = HEALTH_META[health];
+  return (
+    <span title={title} className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1", m.cls)}>
+      <span className={cn("h-1.5 w-1.5 rounded-full", m.dot)} />
+      {m.label}
+    </span>
+  );
+}
