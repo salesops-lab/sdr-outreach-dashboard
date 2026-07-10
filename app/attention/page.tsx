@@ -2,7 +2,7 @@ import { Flame } from "lucide-react";
 import { listWatches } from "../../lib/agent/store";
 import { resolveViewer } from "../../lib/access/resolve";
 import { supabaseServer } from "../../lib/supabase/server";
-import AttentionBoard from "../../components/AttentionBoard";
+import AttentionBoardEnhanced from "../../components/AttentionBoardEnhanced";
 import LogoutButton from "../../components/LogoutButton";
 
 export const dynamic = "force-dynamic";
@@ -36,7 +36,7 @@ export default async function AttentionPage() {
           <LogoutButton />
         </div>
       </header>
-      <AttentionBoard watches={filteredWatches} />
+      <AttentionBoardEnhanced watches={filteredWatches} />
     </main>
   );
 }
