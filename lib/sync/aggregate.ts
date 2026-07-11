@@ -564,10 +564,23 @@ function contactsFrom(contacts: Map<string, SigAcc>, contactMeta: Record<string,
     .slice(0, ROOFTOP_CONTACT_CAP);
 }
 
+/** GD/Single unit key for a rooftop. A rooftop belongs to a Group Dealership when it is ASSOCIATED
+ *  to one — i.e. it has a gd_id OR a dealership_group_name. The `is_this_is_a_part_of_group_dealership_`
+ *  boolean is unreliable (frequently unset even when the association exists), so we do NOT require it;
+ *  requiring it mislabelled genuine GD rooftops (e.g. Auto Credit Solutions, Dan Wolf) as singles.
+ *  Prefer gd_id; fall back to the normalized group name so a group's rooftops still merge when gd_id
+ *  is missing. No group association at all → its own single unit. */
+export function unitKeyFor(c: OwnedCompany): { key: string; isGroup: boolean } {
+  if (c.gdId) return { key: `gd:${c.gdId}`, isGroup: true };
+  const g = c.groupName?.trim();
+  if (g) return { key: `gd:name:${g.toLowerCase()}`, isGroup: true };
+  return { key: `single:${c.id}`, isGroup: false };
+}
+
 /**
  * Roll the rep's owned rooftops into GD/Single units and compute cumulative coverage.
- * A group unit requires BOTH the group flag AND a gd_id; anything else is a single unit
- * (group-flagged rooftops with no gd_id fall back to single — counted, never dropped).
+ * A rooftop joins a GD unit when it is associated to a Group Dealership (gd_id OR
+ * dealership_group_name — see unitKeyFor); rooftops with no group association are single units.
  */
 function computeBookCoverage(
   ownedList: OwnedCompany[],
@@ -578,8 +591,7 @@ function computeBookCoverage(
 ): BookCoverage {
   const units = new Map<string, { name: string; isGroup: boolean; rooftops: OwnedCompany[] }>();
   for (const c of ownedList) {
-    const isGroupUnit = c.isGroup && !!c.gdId;
-    const key = isGroupUnit ? `gd:${c.gdId}` : `single:${c.id}`;
+    const { key, isGroup: isGroupUnit } = unitKeyFor(c);
     const u = units.get(key) ?? { name: isGroupUnit ? (c.groupName || c.name) : c.name, isGroup: isGroupUnit, rooftops: [] };
     if (isGroupUnit && c.groupName) u.name = c.groupName; // prefer the group label
     u.rooftops.push(c);
@@ -707,7 +719,7 @@ export function aggregate(
   for (const ownerId of REP_OWNER_IDS) {
     for (const c of ownedCompanies[ownerId] ?? []) {
       companyOwner.set(c.id, ownerId);
-      companyUnit.set(c.id, c.isGroup && c.gdId ? `gd:${c.gdId}` : `single:${c.id}`);
+      companyUnit.set(c.id, unitKeyFor(c).key);
     }
   }
 
