@@ -89,7 +89,9 @@ export async function loadContentForAccount(accountId: string, limit = 6): Promi
   if (!db) return [];
   const { data: acts } = await db
     .from("sdr_activities").select("hs_id")
-    .contains("company_ids", [accountId]).order("ts_ms", { ascending: false }).limit(40);
+    // jsonb contains needs the JSON-string form — a raw array 400s and the result silently
+    // degraded to [] (same bug class as the timeline loader).
+    .contains("company_ids", JSON.stringify([accountId])).order("ts_ms", { ascending: false }).limit(40);
   const ids = (acts ?? []).map((a: { hs_id: string }) => a.hs_id);
   if (!ids.length) return [];
   const { data: content } = await db.from("sdr_activity_content").select("*").in("hs_id", ids).limit(limit);

@@ -82,3 +82,19 @@ export interface AccountContext {
   timeline: TimelineEvent[]; // chronological activity timeline
 }
 
+/** A grounded per-account brief (blueprint §7.2) — synthesized from the activity timeline +
+ *  call content; every signal/objection carries its dated evidence. Stored in sdr_agent_briefs. */
+export interface AgentBrief {
+  accountId: string;
+  accountName: string | null;
+  repId: string | null;
+  summary: string; // 2-3 sentences: where this account stands and why
+  stakeholders: { name: string; title: string | null; read: string }[]; // read = the model's take
+  buyingSignals: { point: string; evidence: string }[];
+  objections: { point: string; evidence: string }[];
+  nextStep: string;
+  confidence: number; // 0..1 — low when evidence is thin
+  model: string | null;
+  generatedAt: string | null;
+}
+

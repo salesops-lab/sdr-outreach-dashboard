@@ -7,6 +7,7 @@
 import { dispositionLabel } from "../../config/dispositions";
 import { stageLabel, DealStageKey } from "../../config/deal-stages";
 import { ContactMeta } from "./associate";
+import { AgentBrief } from "../agent/types";
 
 export interface TimelineActivityInput {
   id: string;
@@ -96,4 +97,5 @@ export interface AccountTimelinePayload {
   items: TimelineItem[];
   activity_capped: boolean; // true when older activities exist beyond the cap
   watch: { status: string; reason: string | null; next_step: string | null; priority: string | null } | null;
+  brief: AgentBrief | null; // grounded account brief (sdr_agent_briefs), if generated
 }

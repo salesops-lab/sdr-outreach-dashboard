@@ -55,7 +55,25 @@ export default function AccountTimeline({ account, onClose }: {
       )}
       {data && (
         <div className="space-y-5">
-          {data.watch && (data.watch.reason || data.watch.next_step) && (
+          {data.brief && (
+            <div className="rounded-card border border-primary/25 bg-primary-weak/40 p-3.5">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-primary">
+                  <Sparkles className="h-3.5 w-3.5" /> Account Brief
+                </div>
+                <span className="text-[10px] tabular-nums text-ink-subtle">confidence {Math.round(data.brief.confidence * 100)}%</span>
+              </div>
+              <p className="text-sm leading-relaxed text-ink">{data.brief.summary}</p>
+              {data.brief.buyingSignals.slice(0, 3).map((s, i) => (
+                <p key={i} className="mt-1 text-xs text-ink-muted"><span className="font-semibold text-good">＋</span> {s.point} <span className="text-ink-subtle">— {s.evidence}</span></p>
+              ))}
+              {data.brief.objections.slice(0, 2).map((s, i) => (
+                <p key={i} className="mt-1 text-xs text-ink-muted"><span className="font-semibold text-warn">－</span> {s.point} <span className="text-ink-subtle">— {s.evidence}</span></p>
+              ))}
+              <p className="mt-1.5 text-sm text-ink-muted"><span className="font-semibold text-ink">Next:</span> {data.brief.nextStep}</p>
+            </div>
+          )}
+          {data.watch && (data.watch.reason || data.watch.next_step) && !data.brief && (
             <div className="rounded-card border border-primary/25 bg-primary-weak/60 p-3.5">
               <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-primary">
                 <Sparkles className="h-3.5 w-3.5" /> Agent

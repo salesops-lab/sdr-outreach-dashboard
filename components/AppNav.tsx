@@ -6,8 +6,8 @@ import { cn } from "./ui";
 type Tab = "overview" | "accounts" | "attention" | "admin";
 const TABS: { key: Tab; label: string; href: string }[] = [
   { key: "overview", label: "Overview", href: "/" },
-  { key: "accounts", label: "Accounts", href: "/accounts" },
-  { key: "attention", label: "Attention", href: "/attention" },
+  { key: "accounts", label: "Deals & Accounts", href: "/accounts" },
+  { key: "attention", label: "Intelligence", href: "/attention" },
 ];
 
 /** Persistent top navigation shared across the authenticated pages. */

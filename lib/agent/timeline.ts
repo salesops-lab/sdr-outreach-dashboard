@@ -2,6 +2,7 @@ import "server-only";
 import { supabaseAdmin } from "../supabase/admin";
 import { TimelineEvent } from "./types";
 import { ContactRow } from "../spine/types";
+import { dispositionLabel } from "../../config/dispositions";
 
 export interface DBActivityContentRow {
   hs_id: string;
@@ -17,16 +18,18 @@ export async function loadTimelineForAccount(companyId: string, limit = 40): Pro
   const db = supabaseAdmin();
   if (!db) return [];
 
-  // 1. Fetch activities for the company (ordered by ts_ms ascending).
-  // jsonb contains needs the JSON-string form — a raw JS array renders as a Postgres array
-  // literal and errors ("invalid input syntax for type json"), which the catch below used to
-  // swallow silently (the agent then reasoned without raw activity context).
-  const { data: actRows, error: actErr } = await db
+  // 1. Fetch the MOST RECENT activities (descending + limit — ascending+limit returned the
+  // OLDEST slice, so the agent reasoned over ancient history on busy accounts), then present
+  // them chronologically below. jsonb contains needs the JSON-string form — a raw JS array
+  // renders as a Postgres array literal and errors, which the catch below used to swallow
+  // silently (the agent then reasoned without raw activity context).
+  const { data: actRowsDesc, error: actErr } = await db
     .from("sdr_activities")
     .select("*")
     .contains("company_ids", JSON.stringify([companyId]))
-    .order("ts_ms", { ascending: true })
+    .order("ts_ms", { ascending: false })
     .limit(limit);
+  const actRows = (actRowsDesc ?? []).slice().reverse(); // oldest → newest for the reader
 
   if (actErr) {
     console.warn(`[timeline] failed to fetch activities for company ${companyId}:`, actErr.message);
@@ -127,7 +130,8 @@ export async function loadTimelineForAccount(companyId: string, limit = 40): Pro
       type: r.type as "call" | "email",
       tsMs: Number(r.ts_ms),
       dateStr,
-      disposition: r.disposition || null,
+      // Human-readable outcome, not the raw GUID — the models can't interpret GUIDs.
+      disposition: r.disposition ? dispositionLabel(r.disposition) : null,
       emailStatus: r.email_status || null,
       emailOpened: !!r.email_opened,
       emailReplied: !!r.email_replied,

@@ -2,12 +2,12 @@
 
 import { useMemo, useState, useEffect, useCallback, Fragment } from "react";
 import {
-  Flame, ExternalLink, ArrowRight, Sparkles, ChevronDown, ChevronUp, 
-  Copy, Check, Mail, Phone, User, Star, Clock, PlayCircle, PauseCircle, 
-  XCircle, RefreshCw, Calendar, TrendingUp, TrendingDown
+  Flame, ExternalLink, ArrowRight, Sparkles, ChevronDown, ChevronUp,
+  Copy, Check, Mail, Phone, User, Star, Clock, PlayCircle, PauseCircle,
+  XCircle, RefreshCw, Calendar, TrendingUp, TrendingDown, History
 } from "lucide-react";
-import { AgentWatch, Priority, WatchStatus } from "../lib/agent/types";
-import { REPS } from "../config/reps";
+import { AgentBrief, AgentWatch, Priority, WatchStatus } from "../lib/agent/types";
+import AccountTimeline from "./AccountTimeline";
 import { companyUrl } from "../config/hubspot";
 import { Surface, Chip, cn } from "./ui";
 import { TEMP_CHIP_WEAK, TEMP_LABEL } from "./ui-tokens";
@@ -128,7 +128,11 @@ const SNOOZE_OPTIONS = [
   { days: 14, label: "2 weeks" },
 ];
 
-export default function AttentionBoardEnhanced({ watches }: { watches: AgentWatch[] }) {
+export default function AttentionBoardEnhanced({ watches, names = {}, briefs = {} }: {
+  watches: AgentWatch[];
+  names?: Record<string, string>; // owner id → display name (DB roster — replaces the config fallback)
+  briefs?: Record<string, AgentBrief>; // account id → grounded brief (sdr_agent_briefs)
+}) {
   const [repFilter, setRepFilter] = useState("all");
   const [prio, setPrio] = useState<"all" | Priority>("all");
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
@@ -136,6 +140,7 @@ export default function AttentionBoardEnhanced({ watches }: { watches: AgentWatc
   const [actions, setActions] = useState<Map<string, WatchAction>>(new Map());
   const [showSnoozeMenu, setShowSnoozeMenu] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "kanban">("list");
+  const [timelineFor, setTimelineFor] = useState<{ id: string; name: string } | null>(null);
 
   // Load actions from localStorage on mount
   useEffect(() => {
@@ -328,7 +333,7 @@ export default function AttentionBoardEnhanced({ watches }: { watches: AgentWatc
 
         <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)} className="rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink-muted shadow-card outline-none focus:ring-2 focus:ring-primary/30">
           <option value="all">All reps ({reps.length})</option>
-          {reps.map((id) => <option key={id} value={id}>{REPS[id] ?? id}</option>)}
+          {reps.map((id) => <option key={id} value={id}>{names[id] ?? id}</option>)}
         </select>
       </div>
 
@@ -387,7 +392,7 @@ export default function AttentionBoardEnhanced({ watches }: { watches: AgentWatc
                             </div>
                             
                             <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
-                              <span className="font-medium text-ink-muted">{REPS[w.repId ?? ""] ?? w.repId}</span>
+                              <span className="font-medium text-ink-muted">{names[w.repId ?? ""] ?? w.repId}</span>
                               <span className="text-ink-subtle">•</span>
                               <span className={cn("px-1.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider", TEMP_CHIP_WEAK[w.temp ?? "cold"])}>
                                 {TEMP_LABEL[w.temp ?? "cold"]}
@@ -538,7 +543,7 @@ export default function AttentionBoardEnhanced({ watches }: { watches: AgentWatc
                         {(w as RankedWatch).rank.toFixed(0)}
                       </td>
                       <td className="px-4 py-4 font-medium text-ink-muted">
-                        {REPS[w.repId ?? ""] ?? w.repId}
+                        {names[w.repId ?? ""] ?? w.repId}
                       </td>
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
@@ -547,6 +552,14 @@ export default function AttentionBoardEnhanced({ watches }: { watches: AgentWatc
                             {w.accountName ?? w.accountId}
                           </a>
                           <ExternalLink className="h-3 w-3 shrink-0 text-ink-subtle" />
+                          <button onClick={() => setTimelineFor({ id: w.accountId, name: w.accountName ?? w.accountId })}
+                            title="Full activity timeline + deal journey"
+                            className="inline-flex shrink-0 items-center text-primary hover:underline">
+                            <History className="h-3.5 w-3.5" />
+                          </button>
+                          {briefs[w.accountId] && (
+                            <span className="shrink-0 rounded bg-primary-weak px-1 py-0.5 text-[9px] font-bold uppercase text-primary" title="Grounded brief available — expand the row">Brief</span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-4">
@@ -780,6 +793,7 @@ export default function AttentionBoardEnhanced({ watches }: { watches: AgentWatc
                               </div>
                             )}
                           </div>
+                          {briefs[w.accountId] && <BriefBlock brief={briefs[w.accountId]} />}
                         </td>
                       </tr>
                     )}
@@ -790,6 +804,70 @@ export default function AttentionBoardEnhanced({ watches }: { watches: AgentWatc
           </table>
         </div>
       )}
+      {timelineFor && <AccountTimeline account={timelineFor} onClose={() => setTimelineFor(null)} />}
+    </div>
+  );
+}
+
+/** Grounded account brief (sdr_agent_briefs) — every signal/objection carries dated evidence. */
+function BriefBlock({ brief }: { brief: AgentBrief }) {
+  return (
+    <div className="mt-3 rounded-xl border border-primary/25 bg-primary-weak/20 p-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-primary" />
+          <span className="font-bold text-ink">Account Brief</span>
+          <span className="text-[10px] uppercase tracking-wide text-ink-subtle">grounded in activity evidence</span>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-ink-subtle">
+          <span>Confidence {Math.round(brief.confidence * 100)}%</span>
+          {brief.generatedAt && <span>{new Date(brief.generatedAt).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })} ET</span>}
+          {brief.model && <span className="font-mono bg-surface-muted px-1.5 py-0.5 rounded">{brief.model}</span>}
+        </div>
+      </div>
+      <p className="text-sm leading-relaxed text-ink">{brief.summary}</p>
+      <div className="grid gap-4 md:grid-cols-2">
+        {brief.buyingSignals.length > 0 && (
+          <div>
+            <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-good">Buying signals</div>
+            <ul className="space-y-1.5">
+              {brief.buyingSignals.map((s, i) => (
+                <li key={i} className="text-xs">
+                  <span className="font-medium text-ink">{s.point}</span>
+                  <span className="block text-ink-subtle">↳ {s.evidence}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {brief.objections.length > 0 && (
+          <div>
+            <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-warn">Objections / risks</div>
+            <ul className="space-y-1.5">
+              {brief.objections.map((s, i) => (
+                <li key={i} className="text-xs">
+                  <span className="font-medium text-ink">{s.point}</span>
+                  <span className="block text-ink-subtle">↳ {s.evidence}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+      {brief.stakeholders.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {brief.stakeholders.map((s, i) => (
+            <span key={i} className="rounded-full bg-surface-muted px-2 py-0.5 text-[10.5px] text-ink-muted" title={s.read}>
+              <User className="mr-0.5 inline h-3 w-3" />
+              <span className="font-semibold text-ink">{s.name}</span>{s.title ? ` · ${s.title}` : ""}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-start gap-1.5 rounded-lg bg-surface px-3 py-2 text-xs">
+        <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+        <span className="font-semibold text-ink">{brief.nextStep}</span>
+      </div>
     </div>
   );
 }

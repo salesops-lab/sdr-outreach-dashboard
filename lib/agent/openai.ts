@@ -45,21 +45,27 @@ function coerce(raw: unknown): AgentVerdict | null {
   return { why_hot, next_step, priority, status, confidence };
 }
 
-/** One reasoning call for one account. Throws if the key is missing; returns null on bad output. */
-export async function reason(ctx: AccountContext): Promise<AgentVerdict | null> {
+/** Generic strict-JSON completion — the provider seam every reasoner (verdicts, briefs) goes
+ *  through, so swapping/AB-testing providers is a one-file change. Returns null on bad output. */
+export async function completeJSON(system: string, user: string): Promise<unknown> {
   if (!isConfigured()) throw new Error("OPENAI_API_KEY not set");
   const res = await getClient().chat.completions.create({
     model: AGENT_MODEL,
     temperature: 0.2,
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: buildUserPrompt(ctx) },
+      { role: "system", content: system },
+      { role: "user", content: user },
     ],
   });
   try {
-    return coerce(JSON.parse(res.choices[0]?.message?.content ?? ""));
+    return JSON.parse(res.choices[0]?.message?.content ?? "");
   } catch {
     return null;
   }
+}
+
+/** One reasoning call for one account. Throws if the key is missing; returns null on bad output. */
+export async function reason(ctx: AccountContext): Promise<AgentVerdict | null> {
+  return coerce(await completeJSON(SYSTEM_PROMPT, buildUserPrompt(ctx)));
 }

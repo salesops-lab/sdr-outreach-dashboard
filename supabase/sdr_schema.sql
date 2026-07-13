@@ -203,6 +203,19 @@ create table if not exists sdr_agent_watches (
 create index if not exists idx_sdr_watch_rep on sdr_agent_watches(rep_id);
 create index if not exists idx_sdr_watch_status on sdr_agent_watches(status);
 
+-- V3 P3: grounded account briefs (blueprint §7.2) — summary, stakeholders, buying signals,
+-- objections, next step (each signal/objection with dated evidence), synthesized from the
+-- timeline + sdr_activity_content by scripts/agent-briefs.ts. One row per account, refreshed
+-- when stale (~20h). Rendered on /attention (Intelligence) and in the account History panel.
+create table if not exists sdr_agent_briefs (
+  account_id   text primary key,
+  account_name text,
+  rep_id       text,
+  brief        jsonb not null,
+  model        text,
+  generated_at timestamptz not null default now()
+);
+
 -- Append-only reasoning log (audit trail of what the agent said and when).
 create table if not exists sdr_agent_notes (
   id         bigint generated always as identity primary key,
@@ -298,7 +311,7 @@ begin
                            'sdr_teams','sdr_team_members','sdr_roles','sdr_sync_state','sdr_snapshots',
                            'sdr_activity_content','sdr_agent_watches','sdr_agent_notes',
                            'sdr_pods','sdr_managers','sdr_roster',
-                           'sdr_deal_stage_events','sdr_contact_companies']
+                           'sdr_deal_stage_events','sdr_contact_companies','sdr_agent_briefs']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists %I on %I', t || '_spyne_select', t);

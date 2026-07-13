@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "../../../../../lib/supabase/admin";
 import { loadTeamStructure } from "../../../../../lib/team/load";
+import { getBrief } from "../../../../../lib/agent/briefs";
 import { nameMap, kindMap } from "../../../../../lib/team/helpers";
 import { rowToContactMeta } from "../../../../../lib/spine/rows";
 import { ContactRow } from "../../../../../lib/spine/types";
@@ -30,8 +31,9 @@ export async function GET(_req: NextRequest, { params }: { params: { companyId: 
   const db = supabaseAdmin();
   if (!db) return NextResponse.json({ error: "storage unavailable" }, { status: 503 });
 
-  const [ts, companyRes, actRes, dealsRes, watchRes] = await Promise.all([
+  const [ts, brief, companyRes, actRes, dealsRes, watchRes] = await Promise.all([
     loadTeamStructure(),
+    getBrief(id).catch(() => null),
     db.from("sdr_companies").select("hs_id,name,owner_id,gd_stage,group_name").eq("hs_id", id).maybeSingle(),
     db.from("sdr_activities")
       .select("hs_id,type,owner_id,ts_ms,disposition,email_status,email_opened,email_replied,contact_ids")
@@ -113,6 +115,7 @@ export async function GET(_req: NextRequest, { params }: { params: { companyId: 
     items: buildAccountTimeline(activities, stageInputs, contactMeta, names, kindMap(ts)),
     activity_capped: activities.length === ACTIVITY_CAP,
     watch: watchRes.error ? null : (watchRes.data as AccountTimelinePayload["watch"]) ?? null,
+    brief,
   };
   return NextResponse.json(payload);
 }
