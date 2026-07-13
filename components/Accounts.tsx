@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Building2, MapPin, ChevronDown, ChevronRight, Loader2, Phone, Mail, User } from "lucide-react";
+import { Building2, MapPin, ChevronDown, ChevronRight, History, Loader2, Phone, Mail, User } from "lucide-react";
+import AccountTimeline from "./AccountTimeline";
 import {
   Snapshot, BookUnitDetail, RooftopDetail, DemoStatus, RepFunnel,
   STAGE_GROUPS, MARKET_SEGMENTS, MARKET_SEGMENT_LABELS, MarketSegment,
@@ -64,6 +65,7 @@ export default function AccountsView({ snapshot, viewer, teamFilters }: {
   const [units, setUnits] = useState<BookUnitDetail[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [timelineFor, setTimelineFor] = useState<{ id: string; name: string } | null>(null);
 
   // Pod/SDR-team filter narrows the rep picker to the selected group's owner ids.
   const teamIds = useMemo<Set<string> | null>(() => {
@@ -225,6 +227,7 @@ export default function AccountsView({ snapshot, viewer, teamFilters }: {
                       r={r}
                       open={expanded.has(r.id)}
                       onToggle={() => setExpanded((s) => { const n = new Set(s); if (n.has(r.id)) n.delete(r.id); else n.add(r.id); return n; })}
+                      onTimeline={() => setTimelineFor({ id: r.id, name: r.name })}
                     />
                   ))}
                 </div>
@@ -232,12 +235,15 @@ export default function AccountsView({ snapshot, viewer, teamFilters }: {
             ))}
           </div>
         )}
+        {timelineFor && <AccountTimeline account={timelineFor} onClose={() => setTimelineFor(null)} />}
       </main>
     </>
   );
 }
 
-function RooftopRow({ r, open, onToggle }: { r: RooftopDetail; open: boolean; onToggle: () => void }) {
+function RooftopRow({ r, open, onToggle, onTimeline }: {
+  r: RooftopDetail; open: boolean; onToggle: () => void; onTimeline: () => void;
+}) {
   const status = statusOf(r);
   const la = r.last_activity;
   const hasContacts = r.contacts.length > 0;
@@ -249,6 +255,10 @@ function RooftopRow({ r, open, onToggle }: { r: RooftopDetail; open: boolean; on
           <span>{r.name}</span>
         </button>
         <a href={companyUrl(r.id)} target="_blank" rel="noreferrer" className="text-[11px] text-primary hover:underline">HubSpot ↗</a>
+        <button onClick={onTimeline} title="Full activity timeline + deal journey"
+          className="inline-flex items-center gap-0.5 text-[11px] text-primary hover:underline">
+          <History className="h-3 w-3" /> History
+        </button>
         <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold", DEMO_CHIP[status])}>{DEMO_LABEL[status]}{r.deal?.at_risk ? " · at risk" : ""}</span>
         {r.deal?.health ? <DealHealthBadge health={r.deal.health} title={r.deal.health_reason ?? undefined} /> : <TempBadge temp={r.temp} title={r.temp_reason} />}
         {r.deal?.stage && <span className="text-[11px] text-ink-subtle">{r.deal.stage}</span>}

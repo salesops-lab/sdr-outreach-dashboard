@@ -17,11 +17,14 @@ export async function loadTimelineForAccount(companyId: string, limit = 40): Pro
   const db = supabaseAdmin();
   if (!db) return [];
 
-  // 1. Fetch activities for the company (ordered by ts_ms ascending)
+  // 1. Fetch activities for the company (ordered by ts_ms ascending).
+  // jsonb contains needs the JSON-string form — a raw JS array renders as a Postgres array
+  // literal and errors ("invalid input syntax for type json"), which the catch below used to
+  // swallow silently (the agent then reasoned without raw activity context).
   const { data: actRows, error: actErr } = await db
     .from("sdr_activities")
     .select("*")
-    .contains("company_ids", [companyId])
+    .contains("company_ids", JSON.stringify([companyId]))
     .order("ts_ms", { ascending: true })
     .limit(limit);
 

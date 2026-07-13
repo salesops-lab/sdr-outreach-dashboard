@@ -67,8 +67,9 @@ mappers (`stage-events.test.ts`), demo-status segmentation (`segmentation.test.t
 (`deal-health.test.ts`), call-quality mappers (`callquality.test.ts`), spine row mappers incl. deal
 mappers (`spine-rows.test.ts`), the RBAC scope decision (`access.test.ts`), the agent detector
 (`agent-detect.test.ts`), the agent prompt builder (`agent-prompt.test.ts`), the attention ranking
-(`agent-ranking.test.ts`), the auth-domain rule (`auth-domain.test.ts`), and the pod/team filter
-options (`team-filters.test.ts`) — 17 files in all. Never
+(`agent-ranking.test.ts`), the auth-domain rule (`auth-domain.test.ts`), the pod/team filter
+options (`team-filters.test.ts`), and the account-timeline builder (`account-timeline.test.ts`)
+— 18 files in all. Never
 import a `server-only`-guarded module (`lib/supabase/admin.ts`,
 `lib/callquality/fetch.ts`, `lib/agent/openai|store|runner.ts`) from a test — it throws under vitest.
 
@@ -111,6 +112,11 @@ scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions 
   app/api/rep/[ownerId]/book|calls   lazy per-rep drill-downs   ·   app/api/agent/watches
   app/api/metrics/range   arbitrary from–to ET window → aggregateRange over the spine (V3; same
                           pure engine as the fixed periods; 190-day cap; session-gated like all /api)
+  app/api/account/[companyId]/timeline   per-account unified history (V3 P2d): calls/emails (jsonb
+                          contains on company_ids — needs the JSON-string form + the GIN index) +
+                          deal journeys from the stage-event ledger + agent watch; pure assembly in
+                          lib/sync/account-timeline.ts → components/AccountTimeline.tsx (History
+                          button on each Accounts rooftop row)
   app/api/sync/delta   CRON_SECRET-gated alt trigger for runDelta
 
 scripts/agent-run.ts  (.github/workflows/spine-agent.yml, every 2 h)

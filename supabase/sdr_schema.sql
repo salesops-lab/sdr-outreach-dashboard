@@ -22,6 +22,9 @@ create table if not exists sdr_activities (
 );
 create index if not exists idx_sdr_act_owner_ts on sdr_activities(owner_id, ts_ms);
 create index if not exists idx_sdr_act_ts on sdr_activities(ts_ms);
+-- V3 P2d: per-account timeline lookups do a jsonb contains on company_ids — GIN keeps
+-- /api/account/[companyId]/timeline off a sequential scan (route works without it, just slower).
+create index if not exists idx_sdr_act_companies on sdr_activities using gin (company_ids jsonb_path_ops);
 
 create table if not exists sdr_companies (
   hs_id              text primary key,
