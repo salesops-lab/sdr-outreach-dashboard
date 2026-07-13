@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { aggregate } from "../lib/sync/aggregate";
+import { aggregate, demoScheduledMs, demoCompletedMs, computeRepPipeline } from "../lib/sync/aggregate";
 import { makeEtContext } from "../lib/sync/buckets";
 import { Activity, Deal } from "../lib/sync/types";
 import { OwnedCompany } from "../lib/sync/pull";
@@ -402,5 +402,104 @@ describe("aggregate — deals (V2)", () => {
 
   it("exposes owner_kinds for the SDR/AE toggle", () => {
     expect(snap.owner_kinds[REP]).toBe("sdr");
+  });
+});
+
+// ── V3 funnel truth: event-driven demo metrics + active/inactive pipeline ────────────
+describe("aggregate — funnel truth (V3: stage-event demos + pipeline)", () => {
+  const ctx = makeEtContext(NOW); // NOW = Monday 2026-06-29 12:00 EDT
+  const HR = 3_600_000;
+  const AE = "66975998"; // Sanamdeep — designated AE via the kinds map for this test
+  function deal(p: Partial<Deal> & { id: string; stageKey: DealStageKey }): Deal {
+    return {
+      pipeline: AUTO_PIPELINE_ID, dealstage: null, dealOwnerId: null, sdrOwnerId: null,
+      companyId: null, contactIds: [], amount: null,
+      demoScheduledForMs: null, discoveryDoneMs: null, demoDoneMs: null, ...p,
+    };
+  }
+  const deals = [
+    // Scheduled + completed TODAY per the ledger; AE lens sees it via hubspot_owner_id.
+    deal({ id: "e1", stageKey: "demo_accepted", sdrOwnerId: REP, dealOwnerId: AE, stageEvents: [
+      { stageKey: "discovery_done", enteredMs: NOW - HR, exitedMs: NOW },
+      { stageKey: "demo_accepted", enteredMs: NOW, exitedMs: null },
+    ] }),
+    // Scheduled 90 days ago — in NO period (event truth: old events don't inflate periods).
+    deal({ id: "e2", stageKey: "discovery_done", sdrOwnerId: REP, stageEvents: [
+      { stageKey: "discovery_done", enteredMs: NOW - 90 * DAY_MS, exitedMs: null },
+    ] }),
+    // Pre-migration deal (no ledger) — falls back to the stage-date columns. Yesterday = Sunday.
+    deal({ id: "e3", stageKey: "demo_done", sdrOwnerId: REP,
+      discoveryDoneMs: NOW - DAY_MS, demoDoneMs: NOW - DAY_MS }),
+    // Pipeline segregation fodder (current stage).
+    deal({ id: "e4", stageKey: "future_prospect", sdrOwnerId: REP }), // parked (locked decision)
+    deal({ id: "e5", stageKey: "drop_off_sales", sdrOwnerId: REP }), // lost
+    deal({ id: "e6", stageKey: "transferred_cs", sdrOwnerId: REP }), // won (successful exit)
+    deal({ id: "e7", stageKey: "mql", sdrOwnerId: REP }), // active, pre-demo
+  ];
+  const snap = aggregate([], {}, {}, {}, {}, ctx, NOW, { calls: true, emails: true },
+    { ...ROSTER, kinds: { [REP]: "sdr", [AE]: "ae" } }, deals);
+  const rep = snap.reps[REP];
+
+  it("counts demos scheduled/completed by WHEN the stage was entered (not current stage)", () => {
+    expect(rep.periods.today.demos).toEqual({ scheduled: 1, completed: 1 }); // e1 only
+    expect(rep.periods.this_month.demos).toEqual({ scheduled: 2, completed: 2 }); // e1 + e3; e2 too old
+    expect(rep.periods.last_week.demos).toEqual({ scheduled: 1, completed: 1 }); // e3 (Sunday = last ET week)
+  });
+
+  it("falls back to the stage-date columns for deals without a ledger (pre-V3)", () => {
+    expect(rep.periods.yesterday.demos).toEqual({ scheduled: 1, completed: 1 }); // e3 via columns
+  });
+
+  it("attributes the AE lens via hubspot_owner_id (same deal, two lenses, never summed)", () => {
+    const ae = snap.reps[AE];
+    expect(ae.periods.today.demos).toEqual({ scheduled: 1, completed: 1 }); // e1
+    expect(ae.pipeline).toMatchObject({ total: 1, active: 1, active_post_demo: 1, active_pre_demo: 0 });
+  });
+
+  it("segregates the rep's deals into active(pre/post) / parked / won / lost by current stage", () => {
+    expect(rep.pipeline).toEqual({
+      total: 7,
+      active: 4, active_pre_demo: 2, active_post_demo: 2, // e2+e7 pre; e1+e3 post
+      parked: 1, // e4 Future Prospect
+      won: 1, // e6 Transferred to CS counts as a successful exit
+      lost: 1, // e5
+      by_stage: { demo_accepted: 1, demo_done: 1, discovery_done: 1, mql: 1 },
+    });
+  });
+});
+
+describe("demoScheduledMs / demoCompletedMs (pure, ledger-first)", () => {
+  const base: Deal = {
+    id: "d", pipeline: AUTO_PIPELINE_ID, dealstage: null, stageKey: "in_discussion",
+    dealOwnerId: null, sdrOwnerId: null, companyId: null, contactIds: [], amount: null,
+    demoScheduledForMs: null, discoveryDoneMs: 500, demoDoneMs: 900,
+  };
+
+  it("completed = FIRST entry into Demo Done / Accepted / In Discussion (all three count)", () => {
+    const d = { ...base, stageEvents: [
+      { stageKey: "demo_done" as const, enteredMs: 100, exitedMs: 150 },
+      { stageKey: "demo_accepted" as const, enteredMs: 150, exitedMs: 200 },
+      { stageKey: "in_discussion" as const, enteredMs: 200, exitedMs: null },
+    ] };
+    expect(demoCompletedMs(d)).toBe(100); // first of the set, not the latest
+  });
+
+  it("scheduled = entry into Discovery Call Done; ledger wins over the column", () => {
+    const d = { ...base, stageEvents: [{ stageKey: "discovery_done" as const, enteredMs: 42, exitedMs: null }] };
+    expect(demoScheduledMs(d)).toBe(42);
+    expect(demoScheduledMs(base)).toBe(500); // no ledger → discovery_call_done_stage_date column
+    expect(demoCompletedMs(base)).toBe(900); // no ledger → demo_done_stage_date column
+  });
+
+  it("returns null when neither ledger nor columns carry a date", () => {
+    expect(demoScheduledMs({ ...base, discoveryDoneMs: null })).toBeNull();
+    expect(demoCompletedMs({ ...base, demoDoneMs: null })).toBeNull();
+  });
+
+  it("computeRepPipeline ignores out-of-funnel deals except in total", () => {
+    expect(computeRepPipeline([{ ...base, stageKey: "other" }])).toEqual({
+      total: 1, active: 0, active_pre_demo: 0, active_post_demo: 0,
+      parked: 0, won: 0, lost: 0, by_stage: {},
+    });
   });
 });

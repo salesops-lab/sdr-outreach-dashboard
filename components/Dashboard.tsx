@@ -3,9 +3,10 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   PERIOD_KEYS, PERIOD_LABELS, NARROW_PERIODS, STAGE_GROUPS, MARKET_SEGMENTS, MARKET_SEGMENT_LABELS,
-  PeriodKey, PeriodMetrics, RepData, Snapshot, DailyPoint, ReachByChannel, Insight, StageGroup,
+  PeriodKey, PeriodMetrics, RepData, RepPipeline, Snapshot, DailyPoint, ReachByChannel, Insight, StageGroup,
   BookCoverage, CoverageDim, CompanyBreakdownRow, MonthMetrics,
 } from "../lib/sync/types";
+import { stageLabel, stageOrder, DealStageKey } from "../config/deal-stages";
 import {
   Activity, Users, Building2, Gauge, PhoneCall, CalendarCheck, Flame, Phone, Mail, Download,
   AlertTriangle, ExternalLink, ChevronRight, Target, CalendarClock, CheckCircle2,
@@ -26,10 +27,10 @@ const TEMP_TEXT: Record<"hot" | "warm" | "cold", string> = { hot: "text-hot", wa
 
 const CONNECTED_LABELS = new Set(Object.values(CONNECTED_DISPOSITIONS));
 
-type SortKey = "name" | "quality" | "touches" | "contacts" | "companies" | "coverage" | "connect" | "reply" | "meetings" | "hot";
+type SortKey = "name" | "quality" | "touches" | "contacts" | "companies" | "coverage" | "connect" | "reply" | "meetings" | "demos" | "hot";
 type AcctFilter = "all" | "hot" | "warm" | "cold" | "meetings" | "disqualified";
 
-interface Row { ownerId: string; name: string; data: RepData; m: PeriodMetrics; touches: number; }
+interface Row { ownerId: string; name: string; kind: "sdr" | "ae"; data: RepData; m: PeriodMetrics; touches: number; }
 
 const fmt = (n: number) => n.toLocaleString("en-IN");
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
@@ -65,7 +66,11 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
       .filter(([id]) => kindMode === "all" || (snapshot.owner_kinds?.[id] ?? "sdr") === kindMode)
       .map(([ownerId, data]) => {
         const m = data.periods[period];
-        return { ownerId, name: snapshot.owner_names[ownerId] ?? `ID:${ownerId}`, data, m, touches: m.calls.total + m.emails.sent };
+        return {
+          ownerId, name: snapshot.owner_names[ownerId] ?? `ID:${ownerId}`,
+          kind: snapshot.owner_kinds?.[ownerId] ?? ("sdr" as const),
+          data, m, touches: m.calls.total + m.emails.sent,
+        };
       }), [snapshot, period, scopeMode, kindMode, viewer]);
 
   const rows = useMemo<Row[]>(() => {
@@ -73,7 +78,8 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
     const val = (r: Row): number | string => ({
       name: r.name.toLowerCase(), quality: r.m.quality.score, touches: r.touches,
       contacts: r.m.contacts.total, companies: r.m.companies.total, coverage: r.data.book.pct,
-      connect: r.m.calls.connect_rate, reply: r.m.emails.reply_rate, meetings: r.m.meetings_booked, hot: r.m.temp.hot,
+      connect: r.m.calls.connect_rate, reply: r.m.emails.reply_rate, meetings: r.m.meetings_booked,
+      demos: r.m.demos?.scheduled ?? 0, hot: r.m.temp.hot,
     }[sortKey]);
     return [...filtered].sort((a, b) => {
       const av = val(a), bv = val(b);
@@ -83,13 +89,15 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
   }, [allRows, repFilter, sortKey, sortDir]);
 
   const summary = useMemo(() => {
-    const a = { touches: 0, contacts: 0, companies: 0, calls: 0, connected: 0, denom: 0, meetings: 0, unitsTapped: 0, unitsTotal: 0, hot: 0, active: 0, pending: 0, scheduled: 0, done: 0, atRisk: 0 };
+    const a = { touches: 0, contacts: 0, companies: 0, calls: 0, connected: 0, denom: 0, meetings: 0, unitsTapped: 0, unitsTotal: 0, hot: 0, active: 0, pending: 0, scheduled: 0, done: 0, atRisk: 0, demosSched: 0, demosComp: 0 };
     for (const r of rows) {
       a.touches += r.touches; a.contacts += r.m.contacts.total; a.companies += r.m.companies.total;
       a.calls += r.m.calls.total; a.connected += r.m.calls.connected; a.denom += r.m.calls.connected + r.m.calls.not_connected;
       a.meetings += r.m.meetings_booked; a.unitsTapped += r.data.book.units_tapped; a.unitsTotal += r.data.book.units_total; a.hot += r.m.temp.hot;
       const f = r.data.funnel; // absent on a pre-V2 snapshot (before the deals backfill) — guard
       if (f) { a.pending += f.demo_pending; a.scheduled += f.demo_scheduled; a.done += f.demo_done; a.atRisk += f.scheduled_at_risk; }
+      const d = r.m.demos; // event-truth period demos — absent on a pre-V3 snapshot
+      if (d) { a.demosSched += d.scheduled; a.demosComp += d.completed; }
       if (r.touches > 0) a.active++;
     }
     return { ...a, emails: a.touches - a.calls, connectRate: a.denom ? a.connected / a.denom : 0, coverage: a.unitsTotal ? a.unitsTapped / a.unitsTotal : 0 };
@@ -101,8 +109,8 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
   }
 
   function exportCsv() {
-    const head = ["Rep","Quality","Grade","Touches","Calls","Connected","Emails","OpenRate","ReplyRate","UniqContacts","DMcontacts","UniqRooftops","BookUnits","GDs","Singles","UnitsTapped","Coverage","ConnectRate","Meetings","Hot","Warm","Cold"];
-    const lines = rows.map((r) => { const m = r.m; const b = r.data.book; return [`"${r.name.replace(/"/g,'""')}"`, m.quality.score, m.quality.grade, r.touches, m.calls.total, m.calls.connected, m.emails.sent, m.emails.open_rate, m.emails.reply_rate, m.contacts.total, m.dm_contacts, m.companies.total, b.units_total, b.gds, b.singles, b.units_tapped, b.pct, m.calls.connect_rate, m.meetings_booked, m.temp.hot, m.temp.warm, m.temp.cold].join(","); });
+    const head = ["Rep","Quality","Grade","Touches","Calls","Connected","Emails","OpenRate","ReplyRate","UniqContacts","DMcontacts","UniqRooftops","BookUnits","GDs","Singles","UnitsTapped","Coverage","ConnectRate","Meetings","DemosScheduled","DemosCompleted","PipelineActive","Hot","Warm","Cold"];
+    const lines = rows.map((r) => { const m = r.m; const b = r.data.book; return [`"${r.name.replace(/"/g,'""')}"`, m.quality.score, m.quality.grade, r.touches, m.calls.total, m.calls.connected, m.emails.sent, m.emails.open_rate, m.emails.reply_rate, m.contacts.total, m.dm_contacts, m.companies.total, b.units_total, b.gds, b.singles, b.units_tapped, b.pct, m.calls.connect_rate, m.meetings_booked, m.demos?.scheduled ?? "", m.demos?.completed ?? "", r.data.pipeline?.active ?? "", m.temp.hot, m.temp.warm, m.temp.cold].join(","); });
     const url = URL.createObjectURL(new Blob([[head.join(","), ...lines].join("\n")], { type: "text/csv" }));
     const a = document.createElement("a"); a.href = url; a.download = `trackerai-${period}-${snapshot.today_et || "snap"}.csv`; a.click(); URL.revokeObjectURL(url);
   }
@@ -173,11 +181,12 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
           sub={<span className="inline-flex items-center gap-1"><Flame className="h-3 w-3 text-hot" />{fmt(summary.hot)} hot accounts</span>} />
       </div>
 
-      <FunnelStrip pending={summary.pending} scheduled={summary.scheduled} done={summary.done} atRisk={summary.atRisk} lens={kindMode} />
+      <FunnelStrip pending={summary.pending} scheduled={summary.scheduled} done={summary.done} atRisk={summary.atRisk} lens={kindMode}
+        periodDemos={{ scheduled: summary.demosSched, completed: summary.demosComp, label: PERIOD_LABELS[period] }} />
 
       <Surface className="overflow-hidden">
         <div className="scroll-x">
-          <table className="w-full min-w-[1080px] border-collapse text-sm">
+          <table className="w-full min-w-[1240px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-line bg-surface-muted text-[11px] font-semibold uppercase tracking-wide">
                 <SortHeader onClick={() => toggleSort("name")} active={sortKey === "name"} dir={sortDir}>Rep</SortHeader>
@@ -189,7 +198,9 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
                 <SortHeader onClick={() => toggleSort("connect")} active={sortKey === "connect"} dir={sortDir}>Connect</SortHeader>
                 <SortHeader right onClick={() => toggleSort("reply")} active={sortKey === "reply"} dir={sortDir}>Reply</SortHeader>
                 <SortHeader right onClick={() => toggleSort("meetings")} active={sortKey === "meetings"} dir={sortDir}>Mtgs</SortHeader>
+                <SortHeader right onClick={() => toggleSort("demos")} active={sortKey === "demos"} dir={sortDir}>Demos</SortHeader>
                 <SortHeader right onClick={() => toggleSort("hot")} active={sortKey === "hot"} dir={sortDir}>Hot</SortHeader>
+                <th className="px-3 py-2 text-right text-ink-subtle">Funnel</th>
               </tr>
             </thead>
             <tbody>
@@ -231,9 +242,12 @@ const FUNNEL_TINT: Record<string, { text: string; bg: string; ring: string }> = 
   good: { text: "text-good", bg: "bg-good-weak", ring: "ring-good/25" },
 };
 
-/** Lead→demo funnel over the (filtered) owned book: Demo Pending → Scheduled → Done. */
-function FunnelStrip({ pending, scheduled, done, atRisk, lens }: {
+/** Lead→demo funnel over the (filtered) owned book: Demo Pending → Scheduled → Done.
+ *  `periodDemos` is the EVENT-TRUTH view: deals that entered the stage within the selected
+ *  period (from the stage-event ledger) — a flow, unlike the book buckets, which are a photo. */
+function FunnelStrip({ pending, scheduled, done, atRisk, lens, periodDemos }: {
   pending: number; scheduled: number; done: number; atRisk: number; lens: "all" | "sdr" | "ae";
+  periodDemos?: { scheduled: number; completed: number; label: string };
 }) {
   const total = pending + scheduled + done;
   const seg = [
@@ -243,9 +257,16 @@ function FunnelStrip({ pending, scheduled, done, atRisk, lens }: {
   ] as const;
   return (
     <Surface className="mb-6 p-4">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <SectionTitle>Demo funnel · owned book</SectionTitle>
-        <span className="text-[11px] tabular-nums text-ink-subtle">{fmt(total)} accounts</span>
+        <span className="text-[11px] tabular-nums text-ink-subtle">
+          {periodDemos && (periodDemos.scheduled > 0 || periodDemos.completed > 0) && (
+            <span className="mr-3 rounded-full bg-primary-weak px-2 py-0.5 font-semibold text-primary">
+              {periodDemos.label}: {fmt(periodDemos.scheduled)} scheduled · {fmt(periodDemos.completed)} completed
+            </span>
+          )}
+          {fmt(total)} accounts
+        </span>
       </div>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
         {seg.map((s, i) => {
@@ -306,8 +327,36 @@ function RepRow({ row, onOpen }: { row: Row; onOpen: () => void }) {
       </td>
       <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums text-ink-muted">{m.emails.sent > 0 ? pct0(m.emails.reply_rate) : "—"}</td>
       <td className="px-3 py-2.5 text-right font-mono tabular-nums">{m.meetings_booked > 0 ? <span className="font-bold text-good">{m.meetings_booked}</span> : <span className="text-ink-subtle">0</span>}</td>
+      <td className="px-3 py-2.5 text-right font-mono tabular-nums" title="Demos scheduled → completed this period (deal stage entries)">
+        {m.demos
+          ? (m.demos.scheduled + m.demos.completed > 0
+              ? <span><span className="font-bold text-primary">{m.demos.scheduled}</span><span className="mx-0.5 text-ink-subtle">→</span><span className="font-bold text-good">{m.demos.completed}</span></span>
+              : <span className="text-ink-subtle">0</span>)
+          : <span className="text-ink-subtle">—</span>}
+      </td>
       <td className="px-3 py-2.5 text-right font-mono tabular-nums">{m.temp.hot > 0 ? <span className="font-bold text-hot">{m.temp.hot}</span> : <span className="text-ink-subtle">0</span>}</td>
+      <td className="px-3 py-2.5 text-right">
+        {row.data.funnel ? (
+          <span className="inline-flex items-center gap-1 text-[11px] tabular-nums" onClick={(e) => e.stopPropagation()}>
+            <FunnelCell n={row.data.funnel.demo_pending} bucket="pending" ownerId={row.ownerId} kind={row.kind} cls="bg-primary-weak text-primary" title="Demo Pending — open this rep's target list" />
+            <FunnelCell n={row.data.funnel.demo_scheduled} bucket="scheduled" ownerId={row.ownerId} kind={row.kind} cls="bg-warm-weak text-warm" title="Demo Scheduled" />
+            <FunnelCell n={row.data.funnel.demo_done} bucket="done" ownerId={row.ownerId} kind={row.kind} cls="bg-good-weak text-good" title="Demo Done" />
+          </span>
+        ) : <span className="text-xs text-ink-subtle">—</span>}
+      </td>
     </tr>
+  );
+}
+
+/** One linked demo-status count — deep-links into the rep's book on /accounts. */
+function FunnelCell({ n, bucket, ownerId, kind, cls, title }: {
+  n: number; bucket: "pending" | "scheduled" | "done"; ownerId: string; kind: "sdr" | "ae"; cls: string; title: string;
+}) {
+  return (
+    <a href={`/accounts?lens=${kind}&bucket=${bucket}&rep=${ownerId}`} title={title}
+      className={cn("rounded px-1.5 py-0.5 font-semibold transition hover:brightness-95", n > 0 ? cls : "bg-surface-muted text-ink-subtle")}>
+      {fmt(n)}
+    </a>
   );
 }
 
@@ -327,6 +376,7 @@ function Scorecard({ data, m, period, name, ownerId }: { data: RepData; m: Perio
     <div className="space-y-5">
       <InsightChips insights={m.insights} hasBreakdown={hasBreakdown} onMeetings={() => focusAccounts("meetings")} onHot={() => focusAccounts("hot")} />
       <KpiStrip m={m} />
+      <PipelineCard p={data.pipeline} />
       <MonthlyCard monthly={data.monthly} />
       <GdExplorer ownerId={ownerId} book={data.book} />
       <div className="grid gap-5 lg:grid-cols-2">
@@ -379,11 +429,12 @@ function KpiStrip({ m }: { m: PeriodMetrics }) {
     { l: "Open", v: m.emails.sent ? pct(m.emails.open_rate) : "—" },
     { l: "Reply", v: m.emails.sent ? pct(m.emails.reply_rate) : "—" },
     { l: "Meetings", v: fmt(m.meetings_booked) },
+    { l: "Demos", v: m.demos ? `${fmt(m.demos.scheduled)} → ${fmt(m.demos.completed)}` : "—", sub: m.demos ? "sched → completed" : undefined },
     { l: "DM reach", v: m.titled_contacts ? `${fmt(m.dm_contacts)}/${fmt(m.titled_contacts)}` : "—" },
     { l: "Contacts/acct", v: m.avg_contacts_per_company.toFixed(1) },
   ];
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-9">
       {items.map((it) => (
         <Surface key={it.l} className="px-3 py-2">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-subtle">{it.l}</div>
@@ -392,6 +443,45 @@ function KpiStrip({ m }: { m: PeriodMetrics }) {
         </Surface>
       ))}
     </div>
+  );
+}
+
+/** Active/inactive deal segregation (V3, event-model deals) — absent on a pre-V3 snapshot. */
+function PipelineCard({ p }: { p?: RepPipeline }) {
+  if (!p || p.total === 0) return null;
+  const cells: { l: string; v: number; tone: string; sub: string }[] = [
+    { l: "Active", v: p.active, tone: "text-primary", sub: `${fmt(p.active_pre_demo)} pre-demo · ${fmt(p.active_post_demo)} post-demo` },
+    { l: "Parked", v: p.parked, tone: "text-ink-muted", sub: "Future Prospect" },
+    { l: "Won", v: p.won, tone: "text-good", sub: "closed / transferred to CS" },
+    { l: "Lost", v: p.lost, tone: "text-hot", sub: "dropped / Non SAL" },
+  ];
+  const stages = (Object.entries(p.by_stage) as [DealStageKey, number][])
+    .sort((a, b) => stageOrder(a[0]) - stageOrder(b[0]));
+  return (
+    <Surface className="p-4">
+      <SectionTitle right={<span className="text-[11px] tabular-nums text-ink-subtle">{fmt(p.total)} deals attributed</span>}>
+        Deal pipeline — active vs inactive
+      </SectionTitle>
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {cells.map((c) => (
+          <div key={c.l} className="rounded-xl border border-line px-3 py-2.5">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-subtle">{c.l}</div>
+            <div className={cn("font-mono text-xl font-bold tabular-nums", c.tone)}>{fmt(c.v)}</div>
+            <div className="text-[11px] tabular-nums text-ink-subtle">{c.sub}</div>
+          </div>
+        ))}
+      </div>
+      {stages.length > 0 && (
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
+          {stages.map(([k, n]) => (
+            <span key={k} className="rounded-full bg-surface-muted px-2 py-0.5 text-[10.5px] font-medium tabular-nums text-ink-muted">
+              {stageLabel(k)} <span className="font-bold text-ink">{fmt(n)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="mt-2 text-[11px] text-ink-subtle">SDRs are credited via the deal&rsquo;s SDR owner, AEs via the deal owner. Active = live stage needing motion; Parked = Future Prospect.</p>
+    </Surface>
   );
 }
 

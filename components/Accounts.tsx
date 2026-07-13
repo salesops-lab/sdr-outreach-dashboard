@@ -57,13 +57,15 @@ export default function AccountsView({ snapshot, viewer }: { snapshot: Snapshot;
     .map((id) => ({ id, name: snapshot.owner_names[id] ?? `ID:${id}`, funnel: snapshot.reps[id]?.funnel }))
     .sort((a, b) => a.name.localeCompare(b.name)), [scopeIds, lens, snapshot]);
 
-  // Seed lens/bucket from the funnel deep-links; individual reps default the lens to their own type.
+  // Seed lens/bucket/rep from the funnel deep-links (Overview rep-table funnel cells pass all
+  // three); individual reps default the lens to their own type.
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
-    const l = p.get("lens"); const b = p.get("bucket");
+    const l = p.get("lens"); const b = p.get("bucket"); const r = p.get("rep");
     if (l === "sdr" || l === "ae" || l === "all") setLens(l);
     else if (viewer.kind) setLens(viewer.kind);
     if (b === "pending" || b === "scheduled" || b === "done") setBucket(b);
+    if (r) setRep(r);
   }, [viewer.kind]);
 
   // Keep a valid selected rep (default: the viewer's own book, else the first in the filtered list).

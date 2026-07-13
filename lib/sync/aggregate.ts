@@ -16,7 +16,9 @@ import {
 import { classifyTemperature, TempSignals } from "./temperature";
 import { segmentAccount } from "./segmentation";
 import { classifyDealHealth } from "./deal-health";
-import { stageLabel, isLost, stageOrder } from "../../config/deal-stages";
+import {
+  stageLabel, isLost, isWon, isActive, isParked, isPostDemo, isDemoCompletedStage, stageOrder,
+} from "../../config/deal-stages";
 import {
   EtContext, periodsForActivity, etParts, etDateStr, etMidnightUtcMs, dayIndexToYmd, PORTAL_TZ,
 } from "./buckets";
@@ -46,6 +48,7 @@ import {
   ReachByChannel,
   RepData,
   RepFunnel,
+  RepPipeline,
   RooftopContact,
   RooftopDetail,
   CoverageStatus,
@@ -215,6 +218,56 @@ function accountDealInfo(deals: Deal[], lastActivityMs: number | null, nowMs: nu
     }
   }
   return info;
+}
+
+// ── Event-truth demo metrics + active/inactive pipeline (V3) ────────────────────────
+/**
+ * When was the demo SCHEDULED — the deal's (first) entry into Discovery Call Done. From the
+ * stage-event ledger; falls back to the discovery_call_done_stage_date column pre-migration.
+ * (Deals are created at Discovery Call Done in practice, so this ≈ deal creation.)
+ */
+export function demoScheduledMs(d: Deal): number | null {
+  let min: number | null = null;
+  for (const e of d.stageEvents ?? []) {
+    if (e.stageKey === "discovery_done" && (min == null || e.enteredMs < min)) min = e.enteredMs;
+  }
+  return min ?? d.discoveryDoneMs ?? null;
+}
+
+/**
+ * When was the demo COMPLETED — the deal's FIRST entry into Demo Done / Demo Accepted /
+ * In Discussion (locked decision: all three count). Ledger-first; falls back to the
+ * demo_done_stage_date column pre-migration.
+ */
+export function demoCompletedMs(d: Deal): number | null {
+  let min: number | null = null;
+  for (const e of d.stageEvents ?? []) {
+    if (isDemoCompletedStage(e.stageKey) && (min == null || e.enteredMs < min)) min = e.enteredMs;
+  }
+  return min ?? d.demoDoneMs ?? null;
+}
+
+/** Segregate a rep's attributed deals into active (pre/post-demo) / parked / won / lost by
+ *  CURRENT stage. `won` includes Transferred-to-CS (successful exit). Pure — unit-tested. */
+export function computeRepPipeline(repDeals: Deal[]): RepPipeline {
+  const p: RepPipeline = {
+    total: repDeals.length, active: 0, active_pre_demo: 0, active_post_demo: 0,
+    parked: 0, won: 0, lost: 0, by_stage: {},
+  };
+  for (const d of repDeals) {
+    const k = d.stageKey;
+    if (isLost(k)) p.lost++;
+    else if (isWon(k) || k === "transferred_cs") p.won++;
+    else if (isParked(k)) p.parked++;
+    else if (isActive(k)) {
+      p.active++;
+      if (isPostDemo(k)) p.active_post_demo++;
+      else p.active_pre_demo++;
+      p.by_stage[k] = (p.by_stage[k] ?? 0) + 1;
+    }
+    // stageKey "other" (out-of-funnel Auto stages) counts only toward total.
+  }
+  return p;
 }
 
 /** Enriched last-touch from a signal accumulator (owner/contact/outcome), or undefined if untouched. */
@@ -755,6 +808,20 @@ export function aggregate(
     companyDeals.set(d.companyId, list);
   }
 
+  // Deal → rep attribution for the funnel-truth metrics (demos + pipeline): an SDR is credited
+  // via sdr_owner, an AE via hubspot_owner_id — the roster kind picks the field, so the same
+  // deal counts once for the SDR who sourced it AND once for the AE running it (two lenses,
+  // never summed across kinds). Unknown kind defaults to SDR (the roster default).
+  const kinds = roster.kinds ?? {};
+  const dealsByRep = new Map<string, Deal[]>();
+  for (const id of REP_OWNER_IDS) dealsByRep.set(id, []);
+  for (const d of deals) {
+    const sdr = d.sdrOwnerId;
+    const ae = d.dealOwnerId;
+    if (sdr && dealsByRep.has(sdr) && (kinds[sdr] ?? "sdr") === "sdr") dealsByRep.get(sdr)!.push(d);
+    if (ae && ae !== sdr && dealsByRep.has(ae) && kinds[ae] === "ae") dealsByRep.get(ae)!.push(d);
+  }
+
   // Monthly new-unique accumulators (owned-book scoped). firstTap* span ALL history so we can
   // tell whether an account/contact engaged in a recent month was EVER worked before it.
   const recent = recentMonths(ctx.windowEndDate);
@@ -873,6 +940,19 @@ export function aggregate(
       else funnel.demo_pending++;
     }
 
+    // Event-truth demo metrics: count deals by WHEN they entered the stage (ledger-driven),
+    // bucketed through the same US/Eastern period logic as activities. Also the rep's
+    // active/inactive pipeline segregation by current stage.
+    const repDeals = dealsByRep.get(ownerId) ?? [];
+    for (const p of PERIOD_KEYS) periods[p].demos = { scheduled: 0, completed: 0 };
+    for (const d of repDeals) {
+      const s = demoScheduledMs(d);
+      if (s != null) for (const pk of periodsForActivity(s, ctx)) periods[pk].demos!.scheduled++;
+      const c = demoCompletedMs(d);
+      if (c != null) for (const pk of periodsForActivity(c, ctx)) periods[pk].demos!.completed++;
+    }
+    const pipeline = computeRepPipeline(repDeals);
+
     const ma = monthAgg.get(ownerId)!;
     const fco = firstTapCo.get(ownerId)!;
     const fct = firstTapCt.get(ownerId)!;
@@ -891,7 +971,7 @@ export function aggregate(
       };
     });
 
-    reps[ownerId] = { periods, daily, book, monthly, funnel };
+    reps[ownerId] = { periods, daily, book, monthly, funnel, pipeline };
   }
 
   return {
