@@ -60,3 +60,29 @@ export function kindMap(ts: TeamStructure): Record<string, "sdr" | "ae"> {
   for (const m of ts.members) out[m.ownerId] = m.kind === "ae" ? "ae" : "sdr";
   return out;
 }
+
+/** One selectable team filter (an AE pod or an SDR manager subtree) with its owner ids. */
+export interface TeamFilterOption {
+  key: string; // "pod:<podKey>" | "team:<managerKey>" — namespaced so the two lists can share a <select>
+  name: string;
+  ownerIds: string[];
+}
+
+/** Serializable pod/team filter options for the UI (Overview + Accounts pickers).
+ *  Pods = all active owners carrying the pod (SDRs + AEs); teams = a manager's SDR subtree
+ *  (TLs roll up recursively) + the player-coach's own book. Empty groups are dropped. */
+export function teamFilterOptions(ts: TeamStructure): { pods: TeamFilterOption[]; teams: TeamFilterOption[] } {
+  const pods = ts.pods
+    .map((p) => ({ key: `pod:${p.key}`, name: p.name, ownerIds: allOwnersInPod(ts, p.key) }))
+    .filter((p) => p.ownerIds.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const teams = Object.values(ts.managers)
+    .map((m) => {
+      const ids = new Set(sdrOwnersUnderManager(ts, m.key));
+      if (m.ownerId) ids.add(m.ownerId);
+      return { key: `team:${m.key}`, name: m.name, ownerIds: [...ids] };
+    })
+    .filter((t) => t.ownerIds.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { pods, teams };
+}

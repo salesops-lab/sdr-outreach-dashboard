@@ -15,6 +15,7 @@ import { CONNECTED_DISPOSITIONS } from "../config/dispositions";
 import { companyUrl } from "../config/hubspot";
 import { CoachingSnapshot } from "../lib/callquality/types";
 import { Viewer } from "../lib/spine/types";
+import { TeamFilterOption } from "../lib/team/helpers";
 import RepDrawer from "./RepDrawer";
 import GdExplorer from "./GdExplorer";
 import AppNav from "./AppNav";
@@ -43,9 +44,14 @@ function etStamp(iso: string): string {
   } catch { return iso; }
 }
 
-export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; coaching: Record<string, CoachingSnapshot>; viewer: Viewer }) {
+export interface TeamFilters { pods: TeamFilterOption[]; teams: TeamFilterOption[] }
+
+export default function Dashboard({ snapshot, viewer, teamFilters }: {
+  snapshot: Snapshot; coaching: Record<string, CoachingSnapshot>; viewer: Viewer; teamFilters?: TeamFilters;
+}) {
   const [period, setPeriod] = useState<PeriodKey>("this_week");
   const [repFilter, setRepFilter] = useState<string>("all");
+  const [teamFilter, setTeamFilter] = useState<string>("all"); // "all" | "pod:*" | "team:*"
   const [sortKey, setSortKey] = useState<SortKey>("touches");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [drawerRep, setDrawerRep] = useState<string | null>(null);
@@ -60,10 +66,18 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
   const canToggleKind = viewer.isAdmin || viewer.role === "manager" || viewer.role === "leadership";
   const [kindMode, setKindMode] = useState<"all" | "sdr" | "ae">("all");
 
+  // Pod/SDR-team filter: resolve the selected option's owner-id set once.
+  const teamIds = useMemo<Set<string> | null>(() => {
+    if (teamFilter === "all" || !teamFilters) return null;
+    const opt = [...teamFilters.pods, ...teamFilters.teams].find((o) => o.key === teamFilter);
+    return opt ? new Set(opt.ownerIds) : null;
+  }, [teamFilter, teamFilters]);
+
   const allRows = useMemo<Row[]>(() =>
     Object.entries(snapshot.reps)
       .filter(([id]) => scopeMode === "all" || viewer.defaultOwnerIds.includes(id))
       .filter(([id]) => kindMode === "all" || (snapshot.owner_kinds?.[id] ?? "sdr") === kindMode)
+      .filter(([id]) => !teamIds || teamIds.has(id))
       .map(([ownerId, data]) => {
         const m = data.periods[period];
         return {
@@ -71,7 +85,7 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
           kind: snapshot.owner_kinds?.[ownerId] ?? ("sdr" as const),
           data, m, touches: m.calls.total + m.emails.sent,
         };
-      }), [snapshot, period, scopeMode, kindMode, viewer]);
+      }), [snapshot, period, scopeMode, kindMode, teamIds, viewer]);
 
   const rows = useMemo<Row[]>(() => {
     const filtered = repFilter === "all" ? allRows : allRows.filter((r) => r.ownerId === repFilter);
@@ -158,6 +172,22 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
             value={kindMode}
             onChange={(v) => { setKindMode(v as "all" | "sdr" | "ae"); setRepFilter("all"); }}
           />
+        )}
+        {teamFilters && teamFilters.pods.length + teamFilters.teams.length > 0 && (
+          <select value={teamFilter} onChange={(e) => { setTeamFilter(e.target.value); setRepFilter("all"); }}
+            className="rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink-muted shadow-card outline-none focus:ring-2 focus:ring-primary/30">
+            <option value="all">All teams</option>
+            {teamFilters.pods.length > 0 && (
+              <optgroup label="AE Pods">
+                {teamFilters.pods.map((p) => <option key={p.key} value={p.key}>{p.name} ({p.ownerIds.length})</option>)}
+              </optgroup>
+            )}
+            {teamFilters.teams.length > 0 && (
+              <optgroup label="SDR Teams">
+                {teamFilters.teams.map((t) => <option key={t.key} value={t.key}>{t.name} ({t.ownerIds.length})</option>)}
+              </optgroup>
+            )}
+          </select>
         )}
         <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)} className="rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink-muted shadow-card outline-none focus:ring-2 focus:ring-primary/30">
           <option value="all">All reps ({allRows.length})</option>

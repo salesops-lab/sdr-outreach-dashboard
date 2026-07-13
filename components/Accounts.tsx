@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Building2, MapPin, ChevronDown, ChevronRight, Loader2, Phone, Mail, User } from "lucide-react";
 import { Snapshot, BookUnitDetail, RooftopDetail, DemoStatus, RepFunnel } from "../lib/sync/types";
 import { Viewer } from "../lib/spine/types";
+import { TeamFilterOption } from "../lib/team/helpers";
 import { companyUrl } from "../config/hubspot";
 import AppNav from "./AppNav";
 import { Surface, Segmented, TempBadge, DealHealthBadge, cn } from "./ui";
@@ -36,7 +37,10 @@ function ago(ms: number | null | undefined): string {
 }
 
 /** Account-tracking view: the owned book segmented by demo status, GD → rooftop → contact. */
-export default function AccountsView({ snapshot, viewer }: { snapshot: Snapshot; viewer: Viewer }) {
+export default function AccountsView({ snapshot, viewer, teamFilters }: {
+  snapshot: Snapshot; viewer: Viewer;
+  teamFilters?: { pods: TeamFilterOption[]; teams: TeamFilterOption[] };
+}) {
   const canToggleKind = viewer.isAdmin || viewer.role === "manager" || viewer.role === "leadership";
 
   const scopeIds = useMemo(() => {
@@ -47,15 +51,24 @@ export default function AccountsView({ snapshot, viewer }: { snapshot: Snapshot;
 
   const [lens, setLens] = useState<Lens>("all");
   const [bucket, setBucket] = useState<Bucket>("all");
+  const [team, setTeam] = useState<string>("all"); // "all" | "pod:*" | "team:*"
   const [rep, setRep] = useState<string>("");
   const [units, setUnits] = useState<BookUnitDetail[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
+  // Pod/SDR-team filter narrows the rep picker to the selected group's owner ids.
+  const teamIds = useMemo<Set<string> | null>(() => {
+    if (team === "all" || !teamFilters) return null;
+    const opt = [...teamFilters.pods, ...teamFilters.teams].find((o) => o.key === team);
+    return opt ? new Set(opt.ownerIds) : null;
+  }, [team, teamFilters]);
+
   const reps = useMemo(() => scopeIds
     .filter((id) => lens === "all" || (snapshot.owner_kinds?.[id] ?? "sdr") === lens)
+    .filter((id) => !teamIds || teamIds.has(id))
     .map((id) => ({ id, name: snapshot.owner_names[id] ?? `ID:${id}`, funnel: snapshot.reps[id]?.funnel }))
-    .sort((a, b) => a.name.localeCompare(b.name)), [scopeIds, lens, snapshot]);
+    .sort((a, b) => a.name.localeCompare(b.name)), [scopeIds, lens, teamIds, snapshot]);
 
   // Seed lens/bucket/rep from the funnel deep-links (Overview rep-table funnel cells pass all
   // three); individual reps default the lens to their own type.
@@ -114,6 +127,22 @@ export default function AccountsView({ snapshot, viewer }: { snapshot: Snapshot;
         <div className="mb-5 flex flex-wrap items-center gap-2.5">
           {canToggleKind && (
             <Segmented options={[["all", "All"], ["sdr", "SDRs"], ["ae", "AEs"]]} value={lens} onChange={(v) => setLens(v as Lens)} />
+          )}
+          {teamFilters && teamFilters.pods.length + teamFilters.teams.length > 0 && (
+            <select value={team} onChange={(e) => setTeam(e.target.value)}
+              className="rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink-muted shadow-card outline-none focus:ring-2 focus:ring-primary/30">
+              <option value="all">All teams</option>
+              {teamFilters.pods.length > 0 && (
+                <optgroup label="AE Pods">
+                  {teamFilters.pods.map((p) => <option key={p.key} value={p.key}>{p.name} ({p.ownerIds.length})</option>)}
+                </optgroup>
+              )}
+              {teamFilters.teams.length > 0 && (
+                <optgroup label="SDR Teams">
+                  {teamFilters.teams.map((t) => <option key={t.key} value={t.key}>{t.name} ({t.ownerIds.length})</option>)}
+                </optgroup>
+              )}
+            </select>
           )}
           <select value={rep} onChange={(e) => setRep(e.target.value)} className="rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink-muted shadow-card outline-none focus:ring-2 focus:ring-primary/30">
             {reps.length === 0 && <option value="">No reps in scope</option>}
