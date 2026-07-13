@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PERIOD_KEYS, PERIOD_LABELS, NARROW_PERIODS, STAGE_GROUPS, MARKET_SEGMENTS, MARKET_SEGMENT_LABELS,
   PeriodKey, PeriodMetrics, RepData, RepPipeline, Snapshot, DailyPoint, ReachByChannel, Insight, StageGroup,
@@ -52,6 +52,33 @@ export default function Dashboard({ snapshot, viewer, teamFilters }: {
   const [period, setPeriod] = useState<PeriodKey>("this_week");
   const [repFilter, setRepFilter] = useState<string>("all");
   const [teamFilter, setTeamFilter] = useState<string>("all"); // "all" | "pod:*" | "team:*"
+
+  // Custom from–to range (US/Eastern days, inclusive). When applied it replaces the fixed-period
+  // metrics with /api/metrics/range results — same aggregation engine, arbitrary window.
+  const [range, setRange] = useState<{ from: string; to: string } | null>(null);
+  const [draftFrom, setDraftFrom] = useState("");
+  const [draftTo, setDraftTo] = useState("");
+  const [rangeData, setRangeData] = useState<Record<string, PeriodMetrics> | null>(null);
+  const [rangeLoading, setRangeLoading] = useState(false);
+  const [rangeError, setRangeError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!range) { setRangeData(null); setRangeError(null); return; }
+    let cancelled = false;
+    setRangeLoading(true);
+    setRangeError(null);
+    fetch(`/api/metrics/range?from=${range.from}&to=${range.to}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error ?? r.statusText);
+        return r.json();
+      })
+      .then((d) => { if (!cancelled) setRangeData(d.reps ?? {}); })
+      .catch((e) => { if (!cancelled) { setRangeError(e instanceof Error ? e.message : String(e)); setRangeData(null); } })
+      .finally(() => { if (!cancelled) setRangeLoading(false); });
+    return () => { cancelled = true; };
+  }, [range]);
+
+  const periodLabel = range ? `${range.from} → ${range.to}` : PERIOD_LABELS[period];
   const [sortKey, setSortKey] = useState<SortKey>("touches");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [drawerRep, setDrawerRep] = useState<string | null>(null);
@@ -79,13 +106,13 @@ export default function Dashboard({ snapshot, viewer, teamFilters }: {
       .filter(([id]) => kindMode === "all" || (snapshot.owner_kinds?.[id] ?? "sdr") === kindMode)
       .filter(([id]) => !teamIds || teamIds.has(id))
       .map(([ownerId, data]) => {
-        const m = data.periods[period];
+        const m = (range && rangeData ? rangeData[ownerId] : undefined) ?? data.periods[period];
         return {
           ownerId, name: snapshot.owner_names[ownerId] ?? `ID:${ownerId}`,
           kind: snapshot.owner_kinds?.[ownerId] ?? ("sdr" as const),
           data, m, touches: m.calls.total + m.emails.sent,
         };
-      }), [snapshot, period, scopeMode, kindMode, teamIds, viewer]);
+      }), [snapshot, period, scopeMode, kindMode, teamIds, viewer, range, rangeData]);
 
   const rows = useMemo<Row[]>(() => {
     const filtered = repFilter === "all" ? allRows : allRows.filter((r) => r.ownerId === repFilter);
@@ -126,7 +153,7 @@ export default function Dashboard({ snapshot, viewer, teamFilters }: {
     const head = ["Rep","Quality","Grade","Touches","Calls","Connected","Emails","OpenRate","ReplyRate","UniqContacts","DMcontacts","UniqRooftops","BookUnits","GDs","Singles","UnitsTapped","Coverage","ConnectRate","Meetings","DemosScheduled","DemosCompleted","PipelineActive","Hot","Warm","Cold"];
     const lines = rows.map((r) => { const m = r.m; const b = r.data.book; return [`"${r.name.replace(/"/g,'""')}"`, m.quality.score, m.quality.grade, r.touches, m.calls.total, m.calls.connected, m.emails.sent, m.emails.open_rate, m.emails.reply_rate, m.contacts.total, m.dm_contacts, m.companies.total, b.units_total, b.gds, b.singles, b.units_tapped, b.pct, m.calls.connect_rate, m.meetings_booked, m.demos?.scheduled ?? "", m.demos?.completed ?? "", r.data.pipeline?.active ?? "", m.temp.hot, m.temp.warm, m.temp.cold].join(","); });
     const url = URL.createObjectURL(new Blob([[head.join(","), ...lines].join("\n")], { type: "text/csv" }));
-    const a = document.createElement("a"); a.href = url; a.download = `trackerai-${period}-${snapshot.today_et || "snap"}.csv`; a.click(); URL.revokeObjectURL(url);
+    const a = document.createElement("a"); a.href = url; a.download = `trackerai-${range ? `${range.from}_${range.to}` : period}-${snapshot.today_et || "snap"}.csv`; a.click(); URL.revokeObjectURL(url);
   }
 
   const hasData = !!snapshot.generated_at_utc;
@@ -157,7 +184,27 @@ export default function Dashboard({ snapshot, viewer, teamFilters }: {
       )}
 
       <div className="mb-5 flex flex-wrap items-center gap-2.5">
-        <Segmented options={PERIOD_KEYS.map((p) => [p, PERIOD_LABELS[p]] as [string, string])} value={period} onChange={(v) => setPeriod(v as PeriodKey)} />
+        <Segmented options={PERIOD_KEYS.map((p) => [p, PERIOD_LABELS[p]] as [string, string])}
+          value={range ? "" : period}
+          onChange={(v) => { setPeriod(v as PeriodKey); setRange(null); }} />
+        <div className={cn("flex items-center gap-1.5 rounded-xl border bg-surface px-2.5 py-1.5 shadow-card", range ? "border-primary/40" : "border-line")}>
+          <CalendarClock className="h-3.5 w-3.5 shrink-0 text-ink-subtle" />
+          <input type="date" value={draftFrom} onChange={(e) => setDraftFrom(e.target.value)}
+            className="bg-transparent text-xs text-ink-muted outline-none" aria-label="From date" />
+          <span className="text-xs text-ink-subtle">→</span>
+          <input type="date" value={draftTo} onChange={(e) => setDraftTo(e.target.value)}
+            className="bg-transparent text-xs text-ink-muted outline-none" aria-label="To date" />
+          <button onClick={() => draftFrom && draftTo && draftFrom <= draftTo && setRange({ from: draftFrom, to: draftTo })}
+            disabled={!draftFrom || !draftTo || draftFrom > draftTo}
+            className="rounded-lg bg-primary px-2 py-0.5 text-[11px] font-semibold text-primary-fg transition disabled:opacity-40">
+            {rangeLoading ? "…" : "Go"}
+          </button>
+          {range && (
+            <button onClick={() => { setRange(null); setDraftFrom(""); setDraftTo(""); }}
+              className="rounded-lg bg-surface-muted px-1.5 py-0.5 text-[11px] font-semibold text-ink-muted transition hover:text-ink" title="Clear custom range">✕</button>
+          )}
+        </div>
+        {rangeError && <span className="text-xs font-medium text-warn">⚠ {rangeError}</span>}
         {scoped && (
           <Segmented
             tone="good"
@@ -212,7 +259,7 @@ export default function Dashboard({ snapshot, viewer, teamFilters }: {
       </div>
 
       <FunnelStrip pending={summary.pending} scheduled={summary.scheduled} done={summary.done} atRisk={summary.atRisk} lens={kindMode}
-        periodDemos={{ scheduled: summary.demosSched, completed: summary.demosComp, label: PERIOD_LABELS[period] }} />
+        periodDemos={{ scheduled: summary.demosSched, completed: summary.demosComp, label: periodLabel }} />
 
       <Surface className="overflow-hidden">
         <div className="scroll-x">
@@ -252,10 +299,12 @@ export default function Dashboard({ snapshot, viewer, teamFilters }: {
           <RepDrawer
             title={r.name}
             badge={<GradeBadge grade={r.m.quality.grade} score={r.m.quality.score} />}
-            subtitle={PERIOD_LABELS[period]}
+            subtitle={periodLabel}
             onClose={closeDrawer}
           >
-            <Scorecard key={drawerRep} data={r.data} m={r.m} period={period} name={r.name} ownerId={drawerRep} />
+            {/* In range mode m comes from /api/metrics/range (no company_breakdown), so pass a
+                non-narrow period key to keep the per-account card in its "narrow periods only" state. */}
+            <Scorecard key={drawerRep} data={r.data} m={r.m} period={range ? "last_week" : period} name={r.name} ownerId={drawerRep} />
           </RepDrawer>
         ) : null;
       })()}

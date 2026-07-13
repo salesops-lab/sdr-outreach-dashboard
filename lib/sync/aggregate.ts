@@ -247,6 +247,23 @@ export function demoCompletedMs(d: Deal): number | null {
   return min ?? d.demoDoneMs ?? null;
 }
 
+/** Deal → rep attribution for the funnel-truth metrics: an SDR is credited via sdr_owner, an AE
+ *  via hubspot_owner_id (the roster kind picks the field) — the same deal counts once per lens,
+ *  never summed across kinds. Unknown kind defaults to SDR (the roster default). */
+export function dealsByRepLens(
+  deals: Deal[], ownerIds: string[], kinds: Record<string, "sdr" | "ae">,
+): Map<string, Deal[]> {
+  const out = new Map<string, Deal[]>();
+  for (const id of ownerIds) out.set(id, []);
+  for (const d of deals) {
+    const sdr = d.sdrOwnerId;
+    const ae = d.dealOwnerId;
+    if (sdr && out.has(sdr) && (kinds[sdr] ?? "sdr") === "sdr") out.get(sdr)!.push(d);
+    if (ae && ae !== sdr && out.has(ae) && kinds[ae] === "ae") out.get(ae)!.push(d);
+  }
+  return out;
+}
+
 /** Segregate a rep's attributed deals into active (pre/post-demo) / parked / won / lost by
  *  CURRENT stage. `won` includes Transferred-to-CS (successful exit). Pure — unit-tested. */
 export function computeRepPipeline(repDeals: Deal[]): RepPipeline {
@@ -808,19 +825,8 @@ export function aggregate(
     companyDeals.set(d.companyId, list);
   }
 
-  // Deal → rep attribution for the funnel-truth metrics (demos + pipeline): an SDR is credited
-  // via sdr_owner, an AE via hubspot_owner_id — the roster kind picks the field, so the same
-  // deal counts once for the SDR who sourced it AND once for the AE running it (two lenses,
-  // never summed across kinds). Unknown kind defaults to SDR (the roster default).
-  const kinds = roster.kinds ?? {};
-  const dealsByRep = new Map<string, Deal[]>();
-  for (const id of REP_OWNER_IDS) dealsByRep.set(id, []);
-  for (const d of deals) {
-    const sdr = d.sdrOwnerId;
-    const ae = d.dealOwnerId;
-    if (sdr && dealsByRep.has(sdr) && (kinds[sdr] ?? "sdr") === "sdr") dealsByRep.get(sdr)!.push(d);
-    if (ae && ae !== sdr && dealsByRep.has(ae) && kinds[ae] === "ae") dealsByRep.get(ae)!.push(d);
-  }
+  // Deal → rep attribution for the funnel-truth metrics (demos + pipeline).
+  const dealsByRep = dealsByRepLens(deals, REP_OWNER_IDS, roster.kinds ?? {});
 
   // Monthly new-unique accumulators (owned-book scoped). firstTap* span ALL history so we can
   // tell whether an account/contact engaged in a recent month was EVER worked before it.
@@ -987,4 +993,46 @@ export function aggregate(
     owner_kinds: roster.kinds ?? {},
     reps,
   };
+}
+
+/**
+ * V3 arbitrary date-range metrics: fold activities within [fromMs, toMs) into ONE PeriodMetrics
+ * per rep (same engine as the six fixed periods), plus event-truth demos from the deals' stage
+ * ledgers. Returns metrics for EVERY requested owner (zeros when idle). No company_breakdown
+ * (that's a narrow-period feature) and no book/monthly/pipeline — those are period-independent
+ * and live on the snapshot. Pure — the /api/metrics/range route feeds it.
+ */
+export function aggregateRange(
+  activities: Activity[],
+  ownerIds: string[],
+  contactMeta: Record<string, ContactMeta>,
+  deals: Deal[],
+  kinds: Record<string, "sdr" | "ae">,
+  fromMs: number,
+  toMs: number,
+): Record<string, PeriodMetrics> {
+  const accs = new Map<string, Acc>();
+  for (const id of ownerIds) accs.set(id, newAcc());
+  for (const a of activities) {
+    if (a.timestampMs < fromMs || a.timestampMs >= toMs) continue;
+    const acc = accs.get(a.ownerId);
+    if (acc) applyActivity(acc, a);
+  }
+  const dealsByRep = dealsByRepLens(deals, ownerIds, kinds);
+  const out: Record<string, PeriodMetrics> = {};
+  for (const id of ownerIds) {
+    // "last_week" is any NON-narrow period key: finalize only reads it to decide whether to
+    // build company_breakdown, which a range response intentionally omits.
+    const m = finalize(accs.get(id)!, "last_week", {}, {}, contactMeta, new Set(), new Map());
+    const demos = { scheduled: 0, completed: 0 };
+    for (const d of dealsByRep.get(id) ?? []) {
+      const s = demoScheduledMs(d);
+      if (s != null && s >= fromMs && s < toMs) demos.scheduled++;
+      const c = demoCompletedMs(d);
+      if (c != null && c >= fromMs && c < toMs) demos.completed++;
+    }
+    m.demos = demos;
+    out[id] = m;
+  }
+  return out;
 }

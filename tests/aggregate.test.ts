@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { aggregate, demoScheduledMs, demoCompletedMs, computeRepPipeline } from "../lib/sync/aggregate";
+import { aggregate, aggregateRange, demoScheduledMs, demoCompletedMs, computeRepPipeline } from "../lib/sync/aggregate";
 import { makeEtContext } from "../lib/sync/buckets";
 import { Activity, Deal } from "../lib/sync/types";
 import { OwnedCompany } from "../lib/sync/pull";
@@ -465,6 +465,45 @@ describe("aggregate — funnel truth (V3: stage-event demos + pipeline)", () => 
       lost: 1, // e5
       by_stage: { demo_accepted: 1, demo_done: 1, discovery_done: 1, mql: 1 },
     });
+  });
+});
+
+describe("aggregateRange — arbitrary [from, to) window (V3)", () => {
+  const FROM = NOW - 5 * DAY_MS;
+  const TO = NOW - 2 * DAY_MS;
+  const OTHER = "66975998"; // idle in this window
+  const acts: Activity[] = [
+    act({ disposition: CONNECTED, contactIds: ["A"], companyIds: ["X"], timestampMs: NOW - 3 * DAY_MS }), // in window
+    act({ disposition: CONNECTED, contactIds: ["B"], companyIds: ["X"], timestampMs: NOW }), // after → excluded
+    act({ disposition: CONNECTED, companyIds: ["Y"], timestampMs: NOW - 6 * DAY_MS }), // before → excluded
+  ];
+  const deals: Deal[] = [{
+    id: "r1", pipeline: AUTO_PIPELINE_ID, dealstage: null, stageKey: "demo_done",
+    dealOwnerId: null, sdrOwnerId: REP, companyId: "X", contactIds: [], amount: null,
+    demoScheduledForMs: null, discoveryDoneMs: null, demoDoneMs: null,
+    stageEvents: [
+      { stageKey: "discovery_done", enteredMs: NOW - 4 * DAY_MS, exitedMs: NOW - DAY_MS }, // scheduled IN window
+      { stageKey: "demo_done", enteredMs: NOW - DAY_MS, exitedMs: null }, // completed AFTER window
+    ],
+  }];
+  const res = aggregateRange(acts, [REP, OTHER],
+    { A: { name: "Alice Owner", title: "Owner", dm: true } }, deals, { [REP]: "sdr" }, FROM, TO);
+
+  it("folds only in-window activities through the same engine", () => {
+    expect(res[REP].calls.total).toBe(1);
+    expect(res[REP].calls.connected).toBe(1);
+    expect(res[REP].contacts.total).toBe(1);
+    expect(res[REP].dm_contacts).toBe(1); // contact meta applies
+    expect(res[REP].company_breakdown).toBeUndefined(); // narrow-period feature, omitted by design
+  });
+
+  it("counts demos by stage-entry INSIDE the window only", () => {
+    expect(res[REP].demos).toEqual({ scheduled: 1, completed: 0 }); // demo_done entry falls after TO
+  });
+
+  it("returns zeroed metrics for owners idle in the window", () => {
+    expect(res[OTHER].calls.total).toBe(0);
+    expect(res[OTHER].demos).toEqual({ scheduled: 0, completed: 0 });
   });
 });
 

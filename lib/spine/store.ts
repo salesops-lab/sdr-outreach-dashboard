@@ -153,15 +153,11 @@ export interface StoreForAggregate {
   deals: Deal[];
 }
 
-export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]): Promise<StoreForAggregate> {
-  const actRows = await fetchAll<ActivityRow>("sdr_activities",
-    "hs_id,type,owner_id,ts_ms,disposition,email_status,email_opened,email_replied,email_clicked,contact_ids,company_ids",
-    ["ts_ms", "hs_id"], (q) => q.gte("ts_ms", anchorMs));
-  const coRows = await fetchAll<CompanyRow>("sdr_companies",
-    "hs_id,name,gd_stage,lifecycle_stage,owner_id,gd_id,is_group,group_name,segment,dealership_type,last_activity_ms,rooftop_last_activity_ms", ["hs_id"]);
-  const ctRows = await fetchAll<ContactRow>("sdr_contacts", "hs_id,name,title,dm", ["hs_id"]);
-  // Deals are already scoped to tracked owners at pull time, so load them all. Tolerate the table
-  // being absent (V2 migration not yet applied) so the snapshot still rebuilds without deals.
+/** All deals (already scoped to tracked owners at pull time) with their stage-event ledgers
+ *  attached. Tolerates either table being absent pre-migration: no sdr_deals → [], no
+ *  sdr_deal_stage_events → deals without ledgers (metrics fall back to stage-date columns).
+ *  Shared by the aggregate load and the /api/metrics/range route. */
+export async function loadDealsWithEvents(): Promise<Deal[]> {
   let dealRows: DealRow[] = [];
   try {
     dealRows = await fetchAll<DealRow>("sdr_deals",
@@ -170,8 +166,6 @@ export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]
   } catch (e) {
     console.warn(`[spine] sdr_deals unavailable (${e instanceof Error ? e.message : e}) — aggregating without deals until the V2 migration is applied`);
   }
-  // Stage-event ledger (V3) — tolerate the table being absent (period funnel metrics then fall
-  // back to the deal's own stage-date columns; see the aggregate's demoScheduled/CompletedMs).
   const eventsByDeal = new Map<string, DealStageEvent[]>();
   if (dealRows.length) {
     try {
@@ -187,6 +181,42 @@ export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]
       console.warn(`[spine] sdr_deal_stage_events unavailable (${e instanceof Error ? e.message : e}) — aggregating without the stage-event ledger until the V3 migration is applied`);
     }
   }
+  return dealRows.map((r) => {
+    const d = rowToDeal(r);
+    const ev = eventsByDeal.get(d.id);
+    return ev ? { ...d, stageEvents: ev } : d;
+  });
+}
+
+/** Activities within [fromMs, toMs) for the given owners — the /api/metrics/range read. */
+export async function loadActivitiesBetween(fromMs: number, toMs: number, ownerIds: string[]): Promise<Activity[]> {
+  if (ownerIds.length === 0) return [];
+  const rows = await fetchAll<ActivityRow>("sdr_activities",
+    "hs_id,type,owner_id,ts_ms,disposition,email_status,email_opened,email_replied,email_clicked,contact_ids,company_ids",
+    ["ts_ms", "hs_id"], (q) => q.gte("ts_ms", fromMs).lt("ts_ms", toMs).in("owner_id", ownerIds));
+  return rows.map(rowToActivity);
+}
+
+/** Contact meta for a specific id set (chunked .in reads) — range DM-reach without a full scan. */
+export async function loadContactMetaFor(ids: string[]): Promise<Record<string, ContactMeta>> {
+  const out: Record<string, ContactMeta> = {};
+  for (let i = 0; i < ids.length; i += PAGE) {
+    const { data, error } = await sb().from("sdr_contacts").select("hs_id,name,title,dm")
+      .in("hs_id", ids.slice(i, i + PAGE));
+    if (error) throw new Error(`[spine] fetch sdr_contacts subset: ${error.message}`);
+    for (const r of (data ?? []) as ContactRow[]) out[r.hs_id] = rowToContactMeta(r);
+  }
+  return out;
+}
+
+export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]): Promise<StoreForAggregate> {
+  const actRows = await fetchAll<ActivityRow>("sdr_activities",
+    "hs_id,type,owner_id,ts_ms,disposition,email_status,email_opened,email_replied,email_clicked,contact_ids,company_ids",
+    ["ts_ms", "hs_id"], (q) => q.gte("ts_ms", anchorMs));
+  const coRows = await fetchAll<CompanyRow>("sdr_companies",
+    "hs_id,name,gd_stage,lifecycle_stage,owner_id,gd_id,is_group,group_name,segment,dealership_type,last_activity_ms,rooftop_last_activity_ms", ["hs_id"]);
+  const ctRows = await fetchAll<ContactRow>("sdr_contacts", "hs_id,name,title,dm", ["hs_id"]);
+  const deals = await loadDealsWithEvents();
 
   const companyNames: Record<string, string> = {};
   const companyGdStage: Record<string, string | null> = {};
@@ -200,11 +230,6 @@ export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]
   const contactMeta: Record<string, ContactMeta> = {};
   for (const r of ctRows) contactMeta[r.hs_id] = rowToContactMeta(r);
 
-  const deals = dealRows.map((r) => {
-    const d = rowToDeal(r);
-    const ev = eventsByDeal.get(d.id);
-    return ev ? { ...d, stageEvents: ev } : d;
-  });
   return { activities: actRows.map(rowToActivity), companyNames, companyGdStage, contactMeta, ownedCompanies, deals };
 }
 
