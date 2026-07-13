@@ -163,3 +163,11 @@ const STAGE_ORDER: Record<DealStageKey, number> = {
 export function stageOrder(key: DealStageKey): number {
   return STAGE_ORDER[key];
 }
+
+/** Funnel-ordered stage buckets the Deal Funnel strip renders (the lost branch is one merged
+ *  block rendered separately; `other` is out-of-funnel by design). */
+export const FUNNEL_STAGES: DealStageKey[] = [
+  "mql", "discovery_done", "demo_no_show", "demo_rescheduled", "demo_done",
+  "demo_accepted", "in_discussion", "future_prospect", "contract_initiated",
+  "contract_closed", "payment_completed", "transferred_cs",
+];

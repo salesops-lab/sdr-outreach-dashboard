@@ -144,6 +144,31 @@ async function fetchAll<T>(table: string, select: string, orderBy: string[], fil
   }
 }
 
+/** fetchAll, but pages fetched CONCURRENTLY after one count head-request — for request-time
+ *  reads (the /api/deals route) where 20+ sequential round trips would cost ~10s. Rows written
+ *  between the count and the page reads can shift a boundary (same exposure the sequential
+ *  version has); acceptable for read views. */
+async function fetchAllParallel<T>(table: string, select: string, orderBy: string[], filter?: (q: any) => any): Promise<T[]> {
+  let cq = sb().from(table).select(select, { count: "exact", head: true });
+  if (filter) cq = filter(cq);
+  const { count, error: cErr } = await cq;
+  if (cErr) throw new Error(`[spine] count ${table}: ${cErr.message}`);
+  const total = count ?? 0;
+  if (total === 0) return [];
+  const pages = await Promise.all(Array.from({ length: Math.ceil(total / PAGE) }, (_, i) => {
+    let q = sb().from(table).select(select).range(i * PAGE, i * PAGE + PAGE - 1);
+    if (filter) q = filter(q);
+    for (const col of orderBy) q = q.order(col, { ascending: true });
+    return q;
+  }));
+  const out: T[] = [];
+  for (const r of pages) {
+    if (r.error) throw new Error(`[spine] fetch ${table}: ${r.error.message}`);
+    out.push(...(r.data as T[]));
+  }
+  return out;
+}
+
 export interface StoreForAggregate {
   activities: Activity[];
   companyNames: Record<string, string>;
@@ -160,7 +185,7 @@ export interface StoreForAggregate {
 export async function loadDealsWithEvents(): Promise<Deal[]> {
   let dealRows: DealRow[] = [];
   try {
-    dealRows = await fetchAll<DealRow>("sdr_deals",
+    dealRows = await fetchAllParallel<DealRow>("sdr_deals",
       "hs_id,pipeline,dealstage,stage_key,deal_owner_id,sdr_owner_id,company_id,contact_ids,amount,demo_scheduled_for_ms,discovery_done_ms,demo_done_ms,is_closed_won,is_closed_lost",
       ["hs_id"]);
   } catch (e) {
@@ -169,7 +194,7 @@ export async function loadDealsWithEvents(): Promise<Deal[]> {
   const eventsByDeal = new Map<string, DealStageEvent[]>();
   if (dealRows.length) {
     try {
-      const evRows = await fetchAll<DealStageEventRow>("sdr_deal_stage_events",
+      const evRows = await fetchAllParallel<DealStageEventRow>("sdr_deal_stage_events",
         "deal_id,stage_key,entered_ms,exited_ms", ["deal_id", "stage_key", "entered_ms"]);
       for (const r of evRows) {
         const list = eventsByDeal.get(r.deal_id) ?? [];

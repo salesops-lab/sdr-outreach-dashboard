@@ -261,10 +261,13 @@ export async function runOwnerBackfill(ownerId: string, caps?: PullCaps) {
   }
 }
 
-export async function runReconcile(caps?: PullCaps) {
+export async function runReconcile(caps?: PullCaps): Promise<{ ran: boolean }> {
   caps ??= await preflightCaps();
   const lease = await tryLock(60);
-  if (!lease) { console.log("[reconcile] locked — exiting."); return; }
+  // Lock contention with the ~15-min delta heartbeat is COMMON — callers must treat
+  // { ran: false } as "not done" and retry, or the nightly heal silently never happens
+  // (observed: 30-second "successful" reconcile runs that did nothing).
+  if (!lease) { console.log("[reconcile] locked — exiting."); return { ran: false }; }
   const t0 = Date.now();
   try {
     // Full book re-pull: catches owner moves AWAY from tracked reps (delta can't see those).
@@ -287,6 +290,7 @@ export async function runReconcile(caps?: PullCaps) {
     await reaggregate(caps, true);
     await setSyncState("lock", { last_duration_ms: Date.now() - t0, notes: `reconcile ok (cleared ${cleared} stale owners, ${dealCount} deals refreshed)` });
     console.log(`[reconcile] done in ${((Date.now() - t0) / 60000).toFixed(1)}m.`);
+    return { ran: true };
   } finally {
     await unlock(lease);
   }
