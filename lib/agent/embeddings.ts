@@ -81,7 +81,7 @@ export async function indexNewContent(opts: { limit?: number } = {}): Promise<In
   let scanned = 0, indexed = 0, errors = 0;
   for (let from = 0; ; from += PAGE) {
     const { data: rows, error } = await db.from("sdr_activity_content")
-      .select("hs_id,type,call_title,call_body,call_summary,transcript,email_subject")
+      .select("hs_id,type,call_title,call_body,call_summary,transcript,email_subject,email_body")
       .order("hs_id").range(from, from + PAGE - 1);
     if (error) throw new Error(`[embed] read content: ${error.message}`);
     const page = rows ?? [];
