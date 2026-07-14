@@ -12,6 +12,7 @@ export interface DBActivityContentRow {
   call_summary: string | null;
   transcript: string | null;
   email_subject: string | null;
+  email_body?: string | null; // hs_email_text (absent pre-migration)
 }
 
 export async function loadTimelineForAccount(companyId: string, limit = 40): Promise<TimelineEvent[]> {
@@ -109,6 +110,7 @@ export async function loadTimelineForAccount(companyId: string, limit = 40): Pro
           callSummary: c.call_summary || null,
           transcript: c.transcript || null,
           emailSubject: c.email_subject || null,
+          emailBody: c.email_body || null,
         }
       : null;
 

@@ -19,7 +19,7 @@ import { supabaseAdmin } from "../lib/supabase/admin";
 const BATCH = 100;
 const LOOKBACK_MS = 90 * 86_400_000; // content for the last ~90 days of activity
 const CALL_PROPS = ["hs_call_title", "hs_call_body", "hs_call_summary", "nooks_transcript", "transcript"];
-const EMAIL_PROPS = ["hs_email_subject"];
+const EMAIL_PROPS = ["hs_email_subject", "hs_email_text"]; // subject + full plain-text body
 
 interface BatchRead {
   results?: { id: string; properties: Record<string, string | null> }[];
@@ -58,9 +58,10 @@ async function backfill(type: "call" | "email", object: "calls" | "emails", prop
         call_summary: r.properties.hs_call_summary ?? null,
         transcript: r.properties.nooks_transcript || r.properties.transcript || null,
         email_subject: r.properties.hs_email_subject ?? null,
+        email_body: r.properties.hs_email_text ?? null,
         updated_at: now,
       }))
-      .filter((r) => r.call_title || r.call_body || r.call_summary || r.transcript || r.email_subject);
+      .filter((r) => r.call_title || r.call_body || r.call_summary || r.transcript || r.email_subject || r.email_body);
     if (rows.length) {
       const { error: upErr } = await db.from("sdr_activity_content").upsert(rows, { onConflict: "hs_id" });
       if (upErr) throw new Error(`upsert ${type}: ${upErr.message}`);
@@ -73,8 +74,10 @@ async function backfill(type: "call" | "email", object: "calls" | "emails", prop
 }
 
 async function main() {
-  const calls = await backfill("call", "calls", CALL_PROPS);
-  const emails = await backfill("email", "emails", EMAIL_PROPS);
+  // CONTENT_TYPES=email (or call) limits the run to one object type — used for targeted re-pulls.
+  const types = (process.env.CONTENT_TYPES ?? "call,email").split(",").map((t) => t.trim());
+  const calls = types.includes("call") ? await backfill("call", "calls", CALL_PROPS) : 0;
+  const emails = types.includes("email") ? await backfill("email", "emails", EMAIL_PROPS) : 0;
   console.log(`[content] done — ${calls} call rows, ${emails} email rows`);
 }
 

@@ -180,6 +180,9 @@ create table if not exists sdr_activity_content (
   email_subject text,
   updated_at    timestamptz not null default now()
 );
+-- V3 P3: full email BODY (hs_email_text) — reading what's inside the email, not just the
+-- subject line. Added via ALTER so existing installs pick it up.
+alter table sdr_activity_content add column if not exists email_body text;
 
 -- One watch per hot account. The agent maintains status until a meeting is booked or the
 -- account drops off; reason/next_step/priority are the SDR-facing task fields.

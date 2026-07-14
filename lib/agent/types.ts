@@ -71,6 +71,7 @@ export interface TimelineEvent {
     callSummary: string | null;
     transcript: string | null;
     emailSubject: string | null;
+    emailBody: string | null; // hs_email_text — the full plain-text body
   } | null;
 }
 

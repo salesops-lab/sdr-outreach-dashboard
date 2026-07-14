@@ -9,6 +9,8 @@ import "server-only";
 import { supabaseAdmin } from "../supabase/admin";
 import { loadTimelineForAccount } from "./timeline";
 import { getWatches } from "./store";
+import { getRepCalls } from "../callquality/fetch";
+import { cleanEmailBody } from "./embed-chunks";
 import { completeJSON, AGENT_MODEL, isConfigured } from "./openai";
 import { runToolLoop, LoopTool } from "./toolloop";
 import { searchAccountContent, hasIndexedContent } from "./embeddings";
@@ -34,12 +36,31 @@ Return STRICT JSON:
  "next_step": "...",
  "confidence": 0.0}`;
 
-/** Assemble the user prompt: deal state header + the recent timeline with content. */
-export async function buildBriefUser(accountId: string, accountName: string, repName: string | null): Promise<string | null> {
+/** Assemble the user prompt: deal state + BANTIC call-quality analysis (call-scoring project)
+ *  + the recent timeline with content (summaries, transcript + email-body excerpts). */
+export async function buildBriefUser(accountId: string, accountName: string, repId: string | null): Promise<string | null> {
   const db = supabaseAdmin();
   if (!db) return null;
   const timeline = await loadTimelineForAccount(accountId, TIMELINE_EVENTS);
   if (timeline.length === 0) return null; // nothing to ground on — no brief
+
+  // BANTIC analysis for THIS account's analyzed calls (read-only from the call-scoring tables).
+  const banticLines: string[] = [];
+  if (repId) {
+    try {
+      const rc = await getRepCalls(repId);
+      for (const c of rc.calls.filter((x) => x.companyId === accountId).slice(0, 5)) {
+        const bits: string[] = [];
+        if (c.overall != null) bits.push(`BANTIC overall ${c.overall}`);
+        const dims = Object.entries(c.dims).filter(([, v]) => v != null)
+          .map(([k, v]) => `${k}:${v}`).join(" ");
+        if (dims) bits.push(dims);
+        for (const q of c.quotes.slice(0, 2)) bits.push(`quote: "${q}"`);
+        if (c.nextAction) bits.push(`recommended: ${c.nextAction}`);
+        if (bits.length) banticLines.push(`- [${c.date ?? "undated"}] ${bits.join(" · ")}`);
+      }
+    } catch { /* call-scoring source is optional — briefs work without it */ }
+  }
 
   // Deal state (columns that exist since V2 — safe pre-V3.1).
   const { data: dealRows } = await db.from("sdr_deals")
@@ -62,13 +83,14 @@ export async function buildBriefUser(accountId: string, accountName: string, rep
     else if (e.content?.callBody) bits.push(`notes: ${e.content.callBody.slice(0, TRANSCRIPT_CAP)}`);
     if (e.content?.transcript) bits.push(`transcript: "${e.content.transcript.slice(0, TRANSCRIPT_CAP)}"`);
     if (e.content?.emailSubject) bits.push(`subject: ${e.content.emailSubject}`);
+    if (e.content?.emailBody) bits.push(`body: ${cleanEmailBody(e.content.emailBody).slice(0, 500)}`);
     return bits.join(" | ");
   });
 
   return [
     `ACCOUNT: ${accountName}`,
-    repName ? `REP: ${repName}` : null,
     dealLines.length ? `DEALS:\n${dealLines.join("\n")}` : "DEALS: none on record",
+    banticLines.length ? `CALL QUALITY (BANTIC analysis of this account's scored calls):\n${banticLines.join("\n")}` : null,
     `ACTIVITY (oldest → newest):\n${lines.join("\n")}`,
   ].filter(Boolean).join("\n\n");
 }
@@ -199,7 +221,7 @@ const SEARCH_BUDGET = 5; // targeted recalls per brief — beyond this the tool 
 /** Generate one brief: tool loop with semantic recall when the account is indexed,
  *  single-shot otherwise (searching an empty index just burns steps). */
 export async function generateForAccount(accountId: string, accountName: string, repId: string | null): Promise<AgentBrief | null> {
-  const user = await buildBriefUser(accountId, accountName, null);
+  const user = await buildBriefUser(accountId, accountName, repId);
   if (!user) return null; // nothing to ground on
 
   let raw: Record<string, unknown> | null = null;
