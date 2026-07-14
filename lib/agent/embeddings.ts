@@ -11,7 +11,7 @@ import { embedTexts, isConfigured } from "./openai";
 import { composeChunk, ContentFields } from "./embed-chunks";
 
 const EMBED_BATCH = 96; // texts per embeddings request
-const WRITE_BATCH = 16; // rows per DB upsert — HNSW insert cost grows with the graph, and large
+const WRITE_BATCH = 8; // rows per DB upsert — HNSW insert cost grows with the graph, and large
 // vector writes start tripping statement_timeout once the index has tens of thousands of nodes
 const PAGE = 1000;
 
