@@ -4,6 +4,7 @@ import { AccountContext, AgentVerdict, Priority, WatchStatus } from "./types";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt";
 
 export const AGENT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+export const EMBED_MODEL = process.env.OPENAI_EMBED_MODEL || "text-embedding-3-small"; // 1536 dims — matches vector(1536)
 
 let client: OpenAI | null = null;
 function getClient(): OpenAI {
@@ -68,4 +69,27 @@ export async function completeJSON(system: string, user: string): Promise<unknow
 /** One reasoning call for one account. Throws if the key is missing; returns null on bad output. */
 export async function reason(ctx: AccountContext): Promise<AgentVerdict | null> {
   return coerce(await completeJSON(SYSTEM_PROMPT, buildUserPrompt(ctx)));
+}
+
+/** Embed a batch of texts (≤ ~100 per call keeps requests small). Part of the provider seam. */
+export async function embedTexts(texts: string[]): Promise<number[][]> {
+  if (!isConfigured()) throw new Error("OPENAI_API_KEY not set");
+  const res = await getClient().embeddings.create({ model: EMBED_MODEL, input: texts });
+  return res.data.map((d) => d.embedding);
+}
+
+export type ChatMessage = OpenAI.Chat.ChatCompletionMessageParam;
+export type ChatToolDef = OpenAI.Chat.ChatCompletionTool;
+
+/** One step of a tool-calling conversation — the loop lives in toolloop.ts. Provider seam. */
+export async function chatStep(messages: ChatMessage[], tools: ChatToolDef[]): Promise<OpenAI.Chat.ChatCompletionMessage> {
+  if (!isConfigured()) throw new Error("OPENAI_API_KEY not set");
+  const res = await getClient().chat.completions.create({
+    model: AGENT_MODEL,
+    temperature: 0.2,
+    messages,
+    tools,
+    tool_choice: "auto",
+  });
+  return res.choices[0].message;
 }

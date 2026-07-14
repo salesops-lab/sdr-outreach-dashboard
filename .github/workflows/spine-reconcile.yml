@@ -22,3 +22,16 @@ jobs:
           HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # Nightly content refresh (call notes / AI summaries / transcripts, last 90d) — the fuel
+      # for briefs + semantic recall. Kept OFF the 15-min delta path by design.
+      - run: npm run content:backfill
+        env:
+          HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # Index new content into sdr_embeddings (pgvector) — idempotent, new rows only.
+      - run: npm run embed:content
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

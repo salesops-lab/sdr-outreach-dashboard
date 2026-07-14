@@ -203,6 +203,41 @@ create table if not exists sdr_agent_watches (
 create index if not exists idx_sdr_watch_rep on sdr_agent_watches(rep_id);
 create index if not exists idx_sdr_watch_status on sdr_agent_watches(status);
 
+-- V3 P3: semantic recall (blueprint §7.1) — pgvector embeddings over the activity-content
+-- corpus. One 1536-dim vector (text-embedding-3-small) per content-bearing activity
+-- (composeChunk in lib/agent/embed-chunks.ts decides what earns one). Indexed nightly by
+-- `npm run embed:content` (reconcile workflow); searched via sdr_search_content (cosine).
+create extension if not exists vector;
+
+create table if not exists sdr_embeddings (
+  hs_id      text primary key,   -- activity id (matches sdr_activities / sdr_activity_content)
+  account_id text,               -- the activity's primary company (per-account recall filter)
+  ts_ms      bigint,             -- activity timestamp
+  kind       text,               -- 'call' | 'email'
+  chunk      text not null,      -- the embedded text
+  embedding  vector(1536) not null,
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_sdr_emb_account on sdr_embeddings(account_id);
+create index if not exists idx_sdr_emb_vec on sdr_embeddings using hnsw (embedding vector_cosine_ops);
+
+-- Cosine similarity search (PostgREST can't express vector operators — RPC required).
+-- p_account_id null = whole corpus; else scoped to one account's history.
+create or replace function sdr_search_content(
+  p_query vector(1536),
+  p_account_id text default null,
+  p_limit int default 8
+) returns table (hs_id text, account_id text, ts_ms bigint, kind text, chunk text, similarity float)
+language sql stable as $$
+  select e.hs_id, e.account_id, e.ts_ms, e.kind, e.chunk,
+         1 - (e.embedding <=> p_query) as similarity
+  from sdr_embeddings e
+  where p_account_id is null or e.account_id = p_account_id
+  order by e.embedding <=> p_query
+  limit p_limit;
+$$;
+grant execute on function sdr_search_content(vector, text, int) to service_role;
+
 -- V3 P3: grounded account briefs (blueprint §7.2) — summary, stakeholders, buying signals,
 -- objections, next step (each signal/objection with dated evidence), synthesized from the
 -- timeline + sdr_activity_content by scripts/agent-briefs.ts. One row per account, refreshed
@@ -311,7 +346,8 @@ begin
                            'sdr_teams','sdr_team_members','sdr_roles','sdr_sync_state','sdr_snapshots',
                            'sdr_activity_content','sdr_agent_watches','sdr_agent_notes',
                            'sdr_pods','sdr_managers','sdr_roster',
-                           'sdr_deal_stage_events','sdr_contact_companies','sdr_agent_briefs']
+                           'sdr_deal_stage_events','sdr_contact_companies','sdr_agent_briefs',
+                           'sdr_embeddings']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists %I on %I', t || '_spyne_select', t);

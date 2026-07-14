@@ -10,6 +10,8 @@ import { supabaseAdmin } from "../supabase/admin";
 import { loadTimelineForAccount } from "./timeline";
 import { getWatches } from "./store";
 import { completeJSON, AGENT_MODEL, isConfigured } from "./openai";
+import { runToolLoop, LoopTool } from "./toolloop";
+import { searchAccountContent, hasIndexedContent } from "./embeddings";
 import { AgentBrief } from "./types";
 import { stageKey, stageLabel } from "../../config/deal-stages";
 
@@ -154,6 +156,86 @@ export async function getBrief(accountId: string): Promise<AgentBrief | null> {
   return rowToBrief(data as BriefRow);
 }
 
+// ── Tool-using generation (blueprint §7.3): recent timeline in the prompt, semantic recall
+// over the WHOLE history via search, structured output enforced by the submit tool. ──────────
+const BRIEF_LOOP_SYSTEM = BRIEF_SYSTEM_PROMPT + `
+
+You have tools. The activity provided covers only the RECENT timeline — before concluding, use
+search_account_history 2-4 times with targeted queries (e.g. "pricing objection", "decision maker",
+"competitor mention", "demo feedback", "budget timeline") to recall the account's FULL history.
+Finish by calling submit_brief with the complete brief — never answer in plain text.`;
+
+const EVIDENCE_ITEM = {
+  type: "object",
+  properties: { point: { type: "string" }, evidence: { type: "string", description: "quote/paraphrase WITH channel + date" } },
+  required: ["point", "evidence"],
+} as const;
+
+const SUBMIT_SCHEMA = {
+  type: "object",
+  properties: {
+    summary: { type: "string", description: "2-3 sentences on where this account stands and why" },
+    stakeholders: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { name: { type: "string" }, title: { type: ["string", "null"] }, read: { type: "string" } },
+        required: ["name"],
+      },
+    },
+    buying_signals: { type: "array", items: EVIDENCE_ITEM },
+    objections: { type: "array", items: EVIDENCE_ITEM },
+    next_step: { type: "string" },
+    confidence: { type: "number", description: "0..1 — low when evidence is thin" },
+  },
+  required: ["summary", "next_step", "confidence"],
+};
+
+const etDay = (ms: number | null): string =>
+  ms ? new Date(ms).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "2-digit", year: "numeric" }) : "undated";
+
+const SEARCH_BUDGET = 5; // targeted recalls per brief — beyond this the tool tells the model to submit
+
+/** Generate one brief: tool loop with semantic recall when the account is indexed,
+ *  single-shot otherwise (searching an empty index just burns steps). */
+export async function generateForAccount(accountId: string, accountName: string, repId: string | null): Promise<AgentBrief | null> {
+  const user = await buildBriefUser(accountId, accountName, null);
+  if (!user) return null; // nothing to ground on
+
+  let raw: Record<string, unknown> | null = null;
+  if (await hasIndexedContent(accountId)) {
+    let searches = 0;
+    const tools: LoopTool[] = [{
+      name: "search_account_history",
+      description: "Semantic search over this account's ENTIRE call/email content history (notes, AI call summaries, transcript excerpts) — reaches far beyond the recent timeline you were given. Returns the best-matching dated excerpts.",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string", description: "what to look for, e.g. 'pricing objection'" } },
+        required: ["query"],
+      },
+      run: async (args) => {
+        if (++searches > SEARCH_BUDGET) return "Search budget exhausted — call submit_brief NOW with what you have.";
+        const hits = await searchAccountContent(String(args.query ?? ""), accountId, 6);
+        if (!hits.length) return "No indexed content matched this query. Try a DIFFERENT angle or submit.";
+        return hits.map((h) => `[${etDay(h.ts_ms)}] (${h.kind ?? "?"} · ${h.similarity.toFixed(2)}) ${h.chunk}`).join("\n---\n");
+      },
+    }];
+    try {
+      raw = await runToolLoop({
+        system: BRIEF_LOOP_SYSTEM,
+        user,
+        tools,
+        submit: { name: "submit_brief", description: "Submit the final grounded account brief.", parameters: SUBMIT_SCHEMA },
+        maxSteps: 8,
+      });
+    } catch (e) {
+      console.warn(`[briefs] tool loop failed for ${accountId} (${(e as Error).message}) — falling back to single-shot`);
+    }
+  }
+  if (!raw) raw = (await completeJSON(BRIEF_SYSTEM_PROMPT, user)) as Record<string, unknown> | null;
+  return coerceBrief(raw, accountId, accountName, repId);
+}
+
 export interface BriefsRunResult { skipped: boolean; candidates: number; generated: number; errors: number }
 
 /** One briefs pass: refresh stale/missing briefs for the accounts the agent is watching. */
@@ -178,10 +260,8 @@ export async function runBriefs(opts: { limit?: number; nowMs?: number } = {}): 
   let generated = 0, errors = 0;
   for (const w of candidates.slice(0, limit)) {
     try {
-      const user = await buildBriefUser(w.accountId, w.accountName ?? w.accountId, null);
-      if (!user) continue; // no activity to ground on
-      const brief = coerceBrief(await completeJSON(BRIEF_SYSTEM_PROMPT, user), w.accountId, w.accountName, w.repId);
-      if (!brief) { errors++; continue; }
+      const brief = await generateForAccount(w.accountId, w.accountName ?? w.accountId, w.repId);
+      if (!brief) continue; // no activity to ground on (or unusable output — logged)
       await upsertBrief(brief);
       generated++;
     } catch (e) {
