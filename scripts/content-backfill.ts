@@ -29,21 +29,30 @@ async function backfill(type: "call" | "email", object: "calls" | "emails", prop
   const db = supabaseAdmin();
   if (!db) throw new Error("Supabase service role not configured");
   const sinceMs = Date.now() - LOOKBACK_MS;
-  // Keyset-paginated id read (hs_id > cursor walks the PK index — OFFSET pagination forced a
-  // full sort per page and tripped statement_timeout under load; a bare select is also capped
-  // at PostgREST max-rows, which once silently truncated the backfill to 1000 activities).
-  const ids: string[] = [];
-  let cursor = "";
+  // Timestamp-keyset id read: gte(ts_ms) + order(ts_ms) walks idx_sdr_act_ts and only ever
+  // scans the lookback slice (a PK-ordered keyset had to filter the WHOLE table and timed out
+  // under concurrent load). Boundary re-reads are deduped via the Set; pages retry on
+  // transient timeouts.
+  const seen = new Set<string>();
+  let cursorTs = sinceMs;
   for (;;) {
-    const { data, error } = await db.from("sdr_activities").select("hs_id")
-      .eq("type", type).gte("ts_ms", sinceMs).gt("hs_id", cursor)
-      .order("hs_id").limit(1000);
-    if (error) throw new Error(`load ${type} ids: ${error.message}`);
-    const page = (data ?? []).map((a: { hs_id: string }) => a.hs_id);
-    ids.push(...page);
+    let page: { hs_id: string; ts_ms: number }[] | null = null;
+    let lastErr = "";
+    for (let attempt = 1; attempt <= 4 && page == null; attempt++) {
+      const { data, error } = await db.from("sdr_activities").select("hs_id,ts_ms")
+        .eq("type", type).gte("ts_ms", cursorTs).order("ts_ms").limit(1000);
+      if (!error) { page = (data ?? []) as { hs_id: string; ts_ms: number }[]; break; }
+      lastErr = error.message;
+      await delay(1500 * attempt);
+    }
+    if (page == null) throw new Error(`load ${type} ids: ${lastErr}`);
+    let added = 0;
+    for (const a of page) { if (!seen.has(a.hs_id)) { seen.add(a.hs_id); added++; } }
     if (page.length < 1000) break;
-    cursor = page[page.length - 1];
+    const lastTs = Number(page[page.length - 1].ts_ms);
+    cursorTs = added === 0 && lastTs === cursorTs ? lastTs + 1 : lastTs;
   }
+  const ids = [...seen];
   console.log(`[content] ${type}: ${ids.length} activities to read`);
 
   let upserted = 0;
