@@ -332,6 +332,7 @@ insert into sdr_sync_state(key) values ('calls'),('emails'),('companies'),('deal
   on conflict (key) do nothing;
 
 insert into sdr_roles(email, role, team_id) values
+  ('salesops@spyne.ai','admin',null),
   ('kaustubh.chauhan@spyne.ai','admin',null),
   ('saarthak.seth@spyne.ai','manager','362172393'),
   ('neelima.tiwari@spyne.ai','manager','362172280'),

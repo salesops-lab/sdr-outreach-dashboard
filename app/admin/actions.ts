@@ -27,7 +27,7 @@ function sb() {
  *  is absent it just logs — the nightly reconcile will pull the owner within ~24h. */
 async function triggerOwnerPull(ownerId: string): Promise<string> {
   const token = process.env.GH_DISPATCH_TOKEN;
-  const repo = process.env.GH_REPO ?? "kauscodedev/sdr-outreach-dashboard";
+  const repo = process.env.GH_REPO ?? "salesops-lab/sdr-outreach-dashboard";
   if (!token) return "no GH_DISPATCH_TOKEN — history fills on the next nightly reconcile";
   try {
     const res = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/spine-pull-owner.yml/dispatches`, {
