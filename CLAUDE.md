@@ -295,9 +295,21 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   `gpt-4o-mini`) for the agent; `CRON_SECRET` (optional, `/api/sync/delta`); `BLOB_READ_WRITE_TOKEN`
   (optional Blob fallback). **In prod the middleware fails CLOSED (503) if the `NEXT_PUBLIC_SUPABASE_*`
   vars are missing.** GitHub crons need repo (Actions) secrets `HUBSPOT_PAT`, `SUPABASE_URL`,
-  `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY` (agent), and **`GH_DISPATCH_TOKEN`** (a PAT with
-  `actions:write` — powers the heartbeat self-redispatch AND the admin add-user owner-pull dispatch;
-  also lives in Vercel env for the server-action path).
+  `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY` (agent), and **`GH_DISPATCH_TOKEN`** (a fine-grained
+  PAT minted by the `salesops-lab` GitHub account, `actions:write` — powers the heartbeat
+  self-redispatch AND the admin add-user owner-pull dispatch; also lives in Vercel env for the
+  server-action path; PATs are repo-owner-scoped, so a repo transfer kills them — re-mint from the
+  new owner).
+- **Ownership footprint (migrated to salesops@spyne.ai, 2026-07-14).** Repo:
+  `salesops-lab/sdr-outreach-dashboard`; Vercel project `sdr-outreach-dashboard` under the salesops
+  account (Hobby — no team members possible; the old kaus-spyne project was recreated, not
+  transferred, since Hobby→Hobby transfer is Pro-gated). Production domains (all one project):
+  `spyne-sales-activity-tracker.vercel.app` (the team bookmark), `sdr-outreach-dashboard.vercel.app`,
+  `sales-outreach-tracker.vercel.app`. App admin + infra identity: `salesops@spyne.ai` (`sdr_roles`
+  admin; Owner on the GCP project holding the Google OAuth client — the client itself never changed,
+  so login needed no reconfig). Vercel gotchas that bit during migration: `vercel env pull` returns
+  EMPTY strings for sensitive-type vars (length-check before reusing), and API redeploys reuse the
+  build cache so changed `NEXT_PUBLIC_*` values don't inline — deploy fresh from `gitSource` instead.
 - **Auth gate** — `middleware.ts` is the single source of truth (session + `@spyne.ai` via
   `lib/auth/domain.ts`); `PUBLIC_PATHS` exempts `/login`, `/auth`, `/api/sync/delta` (constant-time
   `CRON_SECRET` check). `/api/*` → JSON 401; pages → `/login`. Missing env = pass-through in dev, 503
