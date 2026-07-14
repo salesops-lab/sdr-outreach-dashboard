@@ -68,8 +68,20 @@ async function backfill(type: "call" | "email", object: "calls" | "emails", prop
       }))
       .filter((r) => r.call_title || r.call_body || r.call_summary || r.transcript || r.email_subject || r.email_body);
     if (rows.length) {
-      const { error: upErr } = await db.from("sdr_activity_content").upsert(rows, { onConflict: "hs_id" });
-      if (upErr) throw new Error(`upsert ${type}: ${upErr.message}`);
+      // Retried upsert — a single transient network blip used to kill the whole run.
+      let lastErr = "";
+      let wrote = false;
+      for (let attempt = 1; attempt <= 4 && !wrote; attempt++) {
+        try {
+          const { error: upErr } = await db.from("sdr_activity_content").upsert(rows, { onConflict: "hs_id" });
+          if (!upErr) { wrote = true; break; }
+          lastErr = upErr.message;
+        } catch (e) {
+          lastErr = (e as Error).message;
+        }
+        await delay(1000 * attempt);
+      }
+      if (!wrote) throw new Error(`upsert ${type}: ${lastErr}`);
       upserted += rows.length;
     }
     console.log(`[content] ${type} ${Math.min(i + BATCH, ids.length)}/${ids.length} (upserted ${upserted})`);
